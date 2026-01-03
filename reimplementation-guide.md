@@ -68,6 +68,17 @@ This receding-horizon control reduces compounding errors vs. single-step predict
 
 ## 2. Project Architecture
 
+There are **two repos** involved. Keep them clearly separate in your mind:
+
+| Repo | Purpose |
+|---|---|
+| `diffusion_policy-main/` | **Reference code** — the original paper implementation. Read it, learn from it, compare against it. Do not copy-paste from it. |
+| `diffusion-policy-reimplementation/` | **Your code** — what you build from scratch, stage by stage. This is your portfolio project. |
+
+---
+
+### 2.1 Reference Repo (`diffusion_policy-main/`) — READ FROM HERE
+
 ```
 diffusion_policy-main/
 ├── train.py / eval.py              ← Entry points (Hydra-driven)
@@ -102,9 +113,56 @@ diffusion_policy-main/
 │       └── sampler.py                       ← SequenceSampler
 ```
 
-**Design philosophy**: O(N+M) — adding a new task requires only a new dataset +
-env_runner + config. Adding a new method requires only a new policy + workspace.
-No cross-product of code.
+**Design philosophy of the reference**: O(N+M) — adding a new task requires only
+a new dataset + env_runner + config. Adding a new method requires only a new
+policy + workspace. No cross-product of code.
+
+---
+
+### 2.2 Your Reimplementation Repo (`diffusion-policy-reimplementation/`) — BUILD HERE
+
+Organized by learning stage, not by component type. Each stage is independently
+runnable so you can verify it before moving on.
+
+```
+diffusion-policy-reimplementation/
+├── stage1_ddpm/
+│   ├── noise_scheduler.py      ← your DDPM math
+│   ├── unet1d.py               ← your 1D U-Net
+│   └── train_toy.py            ← toy validation (bimodal distribution test)
+├── stage2_dataset/
+│   ├── replay_buffer.py        ← Zarr reader
+│   ├── sampler.py              ← sequence sampling with padding
+│   └── normalizer.py           ← linear normalizer
+├── stage3_lowdim/
+│   ├── policy.py               ← DiffusionUnetLowdimPolicy
+│   └── train.py                ← training loop (imports stage1 + stage2)
+├── stage4_vision/
+│   └── encoder.py              ← MultiImageObsEncoder (GroupNorm backbone)
+├── stage5_image_policy/
+│   └── policy.py               ← DiffusionUnetHybridImagePolicy
+├── stage6_training/
+│   ├── ema.py                  ← EMAModel
+│   └── workspace.py            ← full training orchestrator
+└── stage7_eval/
+    ├── env_runner.py            ← vectorized rollout
+    └── eval.py                  ← evaluation entry point
+```
+
+**How the two repos relate at each stage**:
+
+| Your file | Read from reference |
+|---|---|
+| `stage1_ddpm/noise_scheduler.py` | `diffusion_policy/model/diffusion/` (schedulers) |
+| `stage1_ddpm/unet1d.py` | `diffusion_policy/model/diffusion/conditional_unet1d.py` |
+| `stage2_dataset/sampler.py` | `diffusion_policy/common/sampler.py` |
+| `stage2_dataset/normalizer.py` | `diffusion_policy/common/normalizer.py` |
+| `stage3_lowdim/policy.py` | `diffusion_policy/policy/diffusion_unet_lowdim_policy.py` |
+| `stage4_vision/encoder.py` | `diffusion_policy/model/vision/multi_image_obs_encoder.py` |
+| `stage5_image_policy/policy.py` | `diffusion_policy/policy/diffusion_unet_hybrid_image_policy.py` |
+| `stage6_training/ema.py` | `diffusion_policy/model/diffusion/ema_model.py` |
+| `stage6_training/workspace.py` | `diffusion_policy/workspace/train_diffusion_unet_hybrid_workspace.py` |
+| `stage7_eval/env_runner.py` | `diffusion_policy/env_runner/pusht_image_runner.py` |
 
 ---
 
