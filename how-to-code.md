@@ -12,58 +12,110 @@
 
 ## Stage 0 — Environment Setup (do this first)
 
-### 0A. Create the Conda Environment
+We use `uv` — the modern Python package manager (same team as `ruff`). It is
+10–100× faster than pip/conda and generates a `uv.lock` lockfile for exact
+reproducibility. No conda needed.
+
+### 0A. Install uv (one-time, system-wide)
 
 ```bash
-conda create -n diffusion_policy python=3.9 -y
-conda activate diffusion_policy
-
-# Core ML
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-
-# Diffusion scheduler (use this in Stage 1 for reference, then write your own)
-pip install diffusers
-
-# Data
-pip install zarr numpy
-
-# Vision backbone
-pip install torchvision  # already above, but needed explicitly
-
-# Experiment tracking
-pip install wandb
-
-# Environment (PushT simulation — reuse the reference, don't reimplement)
-pip install pymunk pygame
-
-# LR scheduler utility
-pip install transformers   # for get_cosine_schedule_with_warmup
-
-# Plotting (for toy validation in Stage 1)
-pip install matplotlib
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Restart your shell, then verify:
+uv --version
 ```
 
-Save this as `requirements.txt` in your repo root.
-
-### 0B. Download the PushT Dataset
+### 0B. Set Up the Project
 
 ```bash
-# Download from the official source
-wget https://diffusion-policy.cs.columbia.edu/data/training/pusht.zip
-unzip pusht.zip
-# You should now have: pusht_cchi_v7_replay.zarr/
+cd diffusion-policy-reimplementation
+
+# Pin Python version
+uv python pin 3.9
+
+# Initialise the project (creates pyproject.toml)
+uv init --no-readme
 ```
 
-Put the dataset at a fixed path, e.g. `data/pusht_cchi_v7_replay.zarr`, and use
-that path consistently in all your training scripts.
+Replace the generated `pyproject.toml` with this:
 
-### 0C. Set Up the Package Structure
+```toml
+[project]
+name = "diffusion-policy-reimplement"
+version = "0.1.0"
+requires-python = "==3.9.*"
+dependencies = [
+    "torch",
+    "torchvision",
+    "diffusers",          # DDPM/DDIM scheduler reference (Stage 1)
+    "zarr",               # dataset storage (Stage 2)
+    "numpy",
+    "transformers",       # get_cosine_schedule_with_warmup (Stage 6)
+    "wandb",              # experiment tracking (Stage 6)
+    "pymunk",             # PushT physics simulation (Stage 7)
+    "pygame",             # PushT rendering (Stage 7)
+    "matplotlib",         # toy validation plots (Stage 1)
+    "einops",             # tensor reshaping utility
+    "opencv-python",      # video logging
+]
 
-For cross-stage imports to work, add `__init__.py` to every stage directory and
-add the repo root to your Python path:
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu118", marker = "platform_system == 'Linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu118", marker = "platform_system == 'Linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "stage1_ddpm",
+    "stage2_dataset",
+    "stage3_lowdim",
+    "stage4_vision",
+    "stage5_image_policy",
+    "stage6_training",
+    "stage7_eval",
+]
+```
+
+### 0C. Install All Dependencies
 
 ```bash
-# Run once from the repo root
+# Install everything + your own package in editable mode
+uv sync
+uv pip install -e .
+
+# Generates uv.lock — commit this file to git for reproducibility
+git add uv.lock pyproject.toml
+```
+
+From now on, run all scripts with `uv run`:
+```bash
+uv run python train.py
+uv run python test_integration.py
+uv run python stage1_ddpm/train_toy.py
+```
+
+Or activate the managed venv once per shell session:
+```bash
+source .venv/bin/activate
+python train.py   # then use python directly
+```
+
+### 0D. Set Up the Package Structure
+
+For cross-stage imports to work, add `__init__.py` to every stage directory:
+
+```bash
 touch stage1_ddpm/__init__.py
 touch stage2_dataset/__init__.py
 touch stage3_lowdim/__init__.py
@@ -73,29 +125,35 @@ touch stage6_training/__init__.py
 touch stage7_eval/__init__.py
 ```
 
-Then add a `setup.py` at the repo root so all stages can import each other:
-
-```python
-# setup.py
-from setuptools import setup, find_packages
-setup(name='diffusion_policy_reimplement', packages=find_packages())
-```
-
-Install in editable mode:
-```bash
-pip install -e .
-```
-
 Now `from stage1_ddpm.noise_scheduler import DDPMScheduler` works from anywhere.
 
-### 0D. Reuse the PushT Environment (don't reimplement)
-
-The PushT simulation (pygame + pymunk physics) is not a learning objective —
-it's just infrastructure. Reuse it directly from the reference repo:
+### 0E. Download the PushT Dataset
 
 ```bash
-# Install the reference repo as a package (for env only)
-pip install -e ../diffusion_policy-main
+mkdir -p data
+wget https://diffusion-policy.cs.columbia.edu/data/training/pusht.zip
+unzip pusht.zip -d data/
+# Result: data/pusht_cchi_v7_replay.zarr/
+rm pusht.zip
+```
+
+Add to `.gitignore` so the dataset is never committed:
+```
+data/
+.venv/
+__pycache__/
+*.pyc
+wandb/
+checkpoints/
+```
+
+### 0F. Reuse the PushT Environment (don't reimplement)
+
+The PushT simulation (pygame + pymunk physics) is infrastructure, not a learning
+objective. Reuse it directly from the reference repo:
+
+```bash
+uv pip install -e ../diffusion_policy-main
 ```
 
 Then in your Stage 7 eval code:
@@ -103,7 +161,21 @@ Then in your Stage 7 eval code:
 from diffusion_policy.env.pusht.pusht_image_env import PushTImageEnv
 ```
 
-This is the only file you import from the reference. Everything else you write yourself.
+This is the only import from the reference. Everything else you write yourself.
+
+### 0G. Verify the Setup
+
+```bash
+uv run python -c "
+import torch
+print('torch:', torch.__version__)
+print('CUDA available:', torch.cuda.is_available())
+import zarr, diffusers, wandb, pymunk, pygame
+print('All imports OK')
+"
+```
+
+All lines should print without error before starting Stage 1.
 
 ---
 
