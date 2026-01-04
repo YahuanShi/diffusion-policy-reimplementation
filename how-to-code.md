@@ -3,6 +3,108 @@
 **Goal**: improve coding ability, master diffusion policy, build a portfolio for AI/robotics jobs.  
 **Principle**: understand the math → write it yourself → validate → then read the reference.
 
+> **Can I run this end-to-end after finishing all stages?**  
+> Yes — but only after completing Stage 0 (environment + data) and Stage 8 (wiring
+> all stages into one runnable system). The stages in between teach each component
+> in isolation. Stage 8 is what makes it a real runnable project.
+
+---
+
+## Stage 0 — Environment Setup (do this first)
+
+### 0A. Create the Conda Environment
+
+```bash
+conda create -n diffusion_policy python=3.9 -y
+conda activate diffusion_policy
+
+# Core ML
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Diffusion scheduler (use this in Stage 1 for reference, then write your own)
+pip install diffusers
+
+# Data
+pip install zarr numpy
+
+# Vision backbone
+pip install torchvision  # already above, but needed explicitly
+
+# Experiment tracking
+pip install wandb
+
+# Environment (PushT simulation — reuse the reference, don't reimplement)
+pip install pymunk pygame
+
+# LR scheduler utility
+pip install transformers   # for get_cosine_schedule_with_warmup
+
+# Plotting (for toy validation in Stage 1)
+pip install matplotlib
+```
+
+Save this as `requirements.txt` in your repo root.
+
+### 0B. Download the PushT Dataset
+
+```bash
+# Download from the official source
+wget https://diffusion-policy.cs.columbia.edu/data/training/pusht.zip
+unzip pusht.zip
+# You should now have: pusht_cchi_v7_replay.zarr/
+```
+
+Put the dataset at a fixed path, e.g. `data/pusht_cchi_v7_replay.zarr`, and use
+that path consistently in all your training scripts.
+
+### 0C. Set Up the Package Structure
+
+For cross-stage imports to work, add `__init__.py` to every stage directory and
+add the repo root to your Python path:
+
+```bash
+# Run once from the repo root
+touch stage1_ddpm/__init__.py
+touch stage2_dataset/__init__.py
+touch stage3_lowdim/__init__.py
+touch stage4_vision/__init__.py
+touch stage5_image_policy/__init__.py
+touch stage6_training/__init__.py
+touch stage7_eval/__init__.py
+```
+
+Then add a `setup.py` at the repo root so all stages can import each other:
+
+```python
+# setup.py
+from setuptools import setup, find_packages
+setup(name='diffusion_policy_reimplement', packages=find_packages())
+```
+
+Install in editable mode:
+```bash
+pip install -e .
+```
+
+Now `from stage1_ddpm.noise_scheduler import DDPMScheduler` works from anywhere.
+
+### 0D. Reuse the PushT Environment (don't reimplement)
+
+The PushT simulation (pygame + pymunk physics) is not a learning objective —
+it's just infrastructure. Reuse it directly from the reference repo:
+
+```bash
+# Install the reference repo as a package (for env only)
+pip install -e ../diffusion_policy-main
+```
+
+Then in your Stage 7 eval code:
+```python
+from diffusion_policy.env.pusht.pusht_image_env import PushTImageEnv
+```
+
+This is the only file you import from the reference. Everything else you write yourself.
+
 ---
 
 ## Overall Learning Strategy
@@ -842,16 +944,174 @@ Prepare answers to all of these before any interview.
 
 ---
 
+## Stage 8 — Integration (wire all stages into one runnable system)
+
+After completing stages 1–7 in isolation, this stage connects them into a single
+end-to-end trainable and evaluatable system. **This is what makes the project
+actually run.**
+
+### 8A. Canonical Import Map
+
+Every file should import from your own stages only (except PushTImageEnv):
+
+```python
+# stage3_lowdim/policy.py
+from stage1_ddpm.noise_scheduler import DDPMScheduler
+from stage1_ddpm.unet1d import ConditionalUnet1D
+from stage2_dataset.normalizer import LinearNormalizer
+
+# stage5_image_policy/policy.py
+from stage1_ddpm.noise_scheduler import DDPMScheduler
+from stage1_ddpm.unet1d import ConditionalUnet1D
+from stage2_dataset.normalizer import LinearNormalizer
+from stage4_vision.encoder import MultiImageObsEncoder
+
+# stage6_training/workspace.py
+from stage2_dataset.replay_buffer import ReplayBuffer
+from stage2_dataset.sampler import SequenceSampler
+from stage2_dataset.normalizer import LinearNormalizer
+from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+from stage6_training.ema import EMAModel
+
+# stage7_eval/env_runner.py
+from diffusion_policy.env.pusht.pusht_image_env import PushTImageEnv  # reference only
+from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+```
+
+### 8B. Single Entry Point
+
+Create `train.py` at the repo root as the single command to run everything:
+
+```python
+# train.py  — run this to train the full image policy on PushT
+import torch
+import copy
+from torch.utils.data import DataLoader
+from transformers import get_cosine_schedule_with_warmup
+
+from stage2_dataset.replay_buffer import ReplayBuffer
+from stage2_dataset.sampler import SequenceSampler
+from stage2_dataset.normalizer import LinearNormalizer
+from stage4_vision.encoder import MultiImageObsEncoder
+from stage1_ddpm.unet1d import ConditionalUnet1D
+from stage1_ddpm.noise_scheduler import DDPMScheduler
+from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+from stage6_training.ema import EMAModel
+from stage6_training.workspace import train   # your train() function
+
+# Config — change these to match your setup
+DATA_PATH  = 'data/pusht_cchi_v7_replay.zarr'
+DEVICE     = 'cuda' if torch.cuda.is_available() else 'cpu'
+BATCH_SIZE = 64
+NUM_EPOCHS = 3050
+HORIZON    = 16
+N_OBS_STEPS    = 2
+N_ACTION_STEPS = 8
+
+if __name__ == '__main__':
+    train(
+        zarr_path=DATA_PATH,
+        device=DEVICE,
+        batch_size=BATCH_SIZE,
+        num_epochs=NUM_EPOCHS,
+        horizon=HORIZON,
+        n_obs_steps=N_OBS_STEPS,
+        n_action_steps=N_ACTION_STEPS,
+    )
+```
+
+### 8C. Integration Test (run before full training)
+
+Before committing to a 3000-epoch run, verify the full pipeline works with a
+tiny smoke test:
+
+```python
+# test_integration.py — run this first, takes < 30 seconds
+import torch
+from stage1_ddpm.noise_scheduler import DDPMScheduler
+from stage1_ddpm.unet1d import ConditionalUnet1D
+from stage2_dataset.normalizer import LinearNormalizer
+from stage4_vision.encoder import MultiImageObsEncoder
+from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# Build all components
+obs_encoder = MultiImageObsEncoder(n_obs_steps=2).to(device)
+model = ConditionalUnet1D(
+    input_dim=2,
+    global_cond_dim=obs_encoder.output_dim,
+    down_dims=[64, 128, 256],   # small dims for fast test
+).to(device)
+scheduler = DDPMScheduler(num_train_timesteps=100)
+policy = DiffusionUnetHybridImagePolicy(
+    obs_encoder=obs_encoder,
+    model=model,
+    noise_scheduler=scheduler,
+    horizon=16,
+    action_dim=2,
+    n_obs_steps=2,
+    n_action_steps=8,
+).to(device)
+
+# Fake batch
+batch = {
+    'image':     torch.randn(4, 2, 3, 96, 96).to(device),
+    'agent_pos': torch.randn(4, 2, 2).to(device),
+    'action':    torch.randn(4, 16, 2).to(device),
+}
+
+# Fit a dummy normalizer
+normalizer = LinearNormalizer()
+normalizer.fit({'image': batch['image'].reshape(-1, 3, 96, 96),
+                'agent_pos': batch['agent_pos'].reshape(-1, 2),
+                'action': batch['action'].reshape(-1, 2)})
+policy.set_normalizer(normalizer)
+
+# Test training step
+loss = policy.compute_loss(batch)
+loss.backward()
+print(f"compute_loss OK: {loss.item():.4f}")
+
+# Test inference
+policy.eval()
+obs_dict = {'image': batch['image'][:1], 'agent_pos': batch['agent_pos'][:1]}
+actions = policy.predict_action(obs_dict)
+print(f"predict_action OK: shape={actions.shape}")   # should be [1, 8, 2]
+
+print("All integration tests passed.")
+```
+
+Run `python test_integration.py` before starting full training. If this passes,
+the full training run will work.
+
+### 8D. End-to-End Checklist
+
+```
+□ conda env created and activated
+□ pip install -e . (package installed in editable mode)
+□ pip install -e ../diffusion_policy-main (for PushTImageEnv only)
+□ data/pusht_cchi_v7_replay.zarr downloaded and accessible
+□ python test_integration.py → "All integration tests passed"
+□ python train.py → loss decreasing in first 100 steps
+□ Checkpoint saved at epoch 50
+□ python eval.py --checkpoint <path> → mean_score printed
+□ mean_score > 0.70 on 50 test episodes
+```
+
+---
+
 ## Recommended Study Schedule
 
 | Week | Focus | Deliverable |
 |---|---|---|
+| 0 | Setup (Stage 0) | Conda env, data downloaded, package installed |
 | 1 | DDPM paper + Stage 1 | `toy_samples.png` showing bimodal distribution |
 | 2 | Stage 2 (dataset) | Unit tests for SequenceSampler and Normalizer |
 | 3 | Stage 3 (lowdim) | Loss curve converging, lowdim eval >0.5 |
 | 4 | Stage 4 (vision) | Shape tests passing, GroupNorm validated |
 | 5 | Stage 5+6 (image policy + training) | First image policy training run |
-| 6 | Stage 7 (eval) + debugging | mean_score > 0.7 on 50 test episodes |
+| 6 | Stage 7+8 (eval + integration) | `test_integration.py` passes, mean_score >0.7 |
 | 7 | Polish + write-up | README with results, WandB screenshots |
 
 After week 7 you have a concrete, verifiable portfolio project.
