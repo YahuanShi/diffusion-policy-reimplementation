@@ -121,48 +121,56 @@ policy + workspace. No cross-product of code.
 
 ### 2.2 Your Reimplementation Repo (`diffusion-policy-reimplementation/`) — BUILD HERE
 
-Organized by learning stage, not by component type. Each stage is independently
-runnable so you can verify it before moving on.
+Organized by component type (mirrors real ML projects), not by learning stage.
+Learning stage numbers live in `how-to-code.md`, not in directory names.
+Each `experiments/` script validates one stage in isolation.
 
 ```
 diffusion-policy-reimplementation/
-├── stage1_ddpm/
-│   ├── noise_scheduler.py      ← your DDPM math
-│   ├── unet1d.py               ← your 1D U-Net
-│   └── train_toy.py            ← toy validation (bimodal distribution test)
-├── stage2_dataset/
-│   ├── replay_buffer.py        ← Zarr reader
-│   ├── sampler.py              ← sequence sampling with padding
-│   └── normalizer.py           ← linear normalizer
-├── stage3_lowdim/
-│   ├── policy.py               ← DiffusionUnetLowdimPolicy
-│   └── train.py                ← training loop (imports stage1 + stage2)
-├── stage4_vision/
-│   └── encoder.py              ← MultiImageObsEncoder (GroupNorm backbone)
-├── stage5_image_policy/
-│   └── policy.py               ← DiffusionUnetHybridImagePolicy
-├── stage6_training/
-│   ├── ema.py                  ← EMAModel
-│   └── workspace.py            ← full training orchestrator
-└── stage7_eval/
-    ├── env_runner.py            ← vectorized rollout
-    └── eval.py                  ← evaluation entry point
+├── diffusion_policy/                ← main package (production-style)
+│   ├── model/
+│   │   ├── diffusion/
+│   │   │   ├── scheduler.py         ← Stage 1A: DDPM forward + reverse
+│   │   │   ├── unet1d.py            ← Stage 1B–D: 1D U-Net denoiser
+│   │   │   └── ema.py               ← Stage 6: EMA weight averaging
+│   │   └── vision/
+│   │       └── encoder.py           ← Stage 4: MultiImageObsEncoder (GroupNorm)
+│   ├── dataset/
+│   │   ├── replay_buffer.py         ← Stage 2: Zarr reader
+│   │   ├── sampler.py               ← Stage 2: SequenceSampler
+│   │   └── normalizer.py            ← Stage 2: LinearNormalizer
+│   └── policy/
+│       ├── lowdim.py                ← Stage 3: state-only policy
+│       └── image.py                 ← Stage 5: image + lowdim policy
+├── training/
+│   └── workspace.py                 ← Stage 6: full training orchestrator
+├── eval/
+│   └── runner.py                    ← Stage 7: PushT rollout runner
+├── experiments/                     ← standalone per-stage validation scripts
+│   ├── 01_ddpm_toy.py               ← validates Stage 1 (bimodal toy test)
+│   ├── 02_dataset_test.py           ← validates Stage 2 (shapes + normalizer)
+│   └── 03_lowdim_train.py           ← validates Stage 3 (loss convergence)
+├── train.py                         ← full pipeline entry point
+├── eval.py                          ← evaluation entry point
+├── test_integration.py              ← smoke test before full training run
+├── pyproject.toml                   ← uv dependencies + package config
+└── .gitignore
 ```
 
 **How the two repos relate at each stage**:
 
-| Your file | Read from reference |
+| Your file | Read from reference (after your own attempt) |
 |---|---|
-| `stage1_ddpm/noise_scheduler.py` | `diffusion_policy/model/diffusion/` (schedulers) |
-| `stage1_ddpm/unet1d.py` | `diffusion_policy/model/diffusion/conditional_unet1d.py` |
-| `stage2_dataset/sampler.py` | `diffusion_policy/common/sampler.py` |
-| `stage2_dataset/normalizer.py` | `diffusion_policy/common/normalizer.py` |
-| `stage3_lowdim/policy.py` | `diffusion_policy/policy/diffusion_unet_lowdim_policy.py` |
-| `stage4_vision/encoder.py` | `diffusion_policy/model/vision/multi_image_obs_encoder.py` |
-| `stage5_image_policy/policy.py` | `diffusion_policy/policy/diffusion_unet_hybrid_image_policy.py` |
-| `stage6_training/ema.py` | `diffusion_policy/model/diffusion/ema_model.py` |
-| `stage6_training/workspace.py` | `diffusion_policy/workspace/train_diffusion_unet_hybrid_workspace.py` |
-| `stage7_eval/env_runner.py` | `diffusion_policy/env_runner/pusht_image_runner.py` |
+| `diffusion_policy/model/diffusion/scheduler.py` | `diffusion_policy/model/diffusion/` (schedulers) |
+| `diffusion_policy/model/diffusion/unet1d.py` | `diffusion_policy/model/diffusion/conditional_unet1d.py` |
+| `diffusion_policy/dataset/sampler.py` | `diffusion_policy/common/sampler.py` |
+| `diffusion_policy/dataset/normalizer.py` | `diffusion_policy/model/common/normalizer.py` |
+| `diffusion_policy/policy/lowdim.py` | `diffusion_policy/policy/diffusion_unet_lowdim_policy.py` |
+| `diffusion_policy/model/vision/encoder.py` | `diffusion_policy/model/vision/multi_image_obs_encoder.py` |
+| `diffusion_policy/policy/image.py` | `diffusion_policy/policy/diffusion_unet_hybrid_image_policy.py` |
+| `diffusion_policy/model/diffusion/ema.py` | `diffusion_policy/model/diffusion/ema_model.py` |
+| `training/workspace.py` | `diffusion_policy/workspace/train_diffusion_unet_hybrid_workspace.py` |
+| `eval/runner.py` | `diffusion_policy/env_runner/pusht_image_runner.py` |
 
 ---
 
