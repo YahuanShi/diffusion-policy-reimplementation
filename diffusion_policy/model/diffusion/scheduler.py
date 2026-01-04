@@ -13,7 +13,7 @@ class DDPMScheduler:
 
         elif beta_schedule == 'squaredcos_cap_v2':
             # Cosine schedule (Nichol & Dhariwal 2021) - more stable than linear
-            # Formula:  ᾱ_t = cos²( (t/T + s) / (1+s) · π/2 ) whera s=0.008
+            # Formula:  ᾱ_t = cos²( (t/T + s) / (1+s) · π/2 ) where s=0.008
             # Then β_t = 1 - ᾱ_t / ᾱ_{t-1}, clipped to [0, 0.999]
             s = 0.008
             steps = num_train_timesteps + 1
@@ -59,7 +59,7 @@ class DDPMScheduler:
         # x_{t-1} mean (no noise term yet)
         pred_prev_mean = (1.0 / torch.sqrt(alpha_t)) * (x_t - (beta_t / sqrt_one_minus_alphas_prod) *eps_pred)
 
-        # Add variance (skip at t=0, no noise o nthe last step)
+        # Add variance (skip at t=0, no noise on the last step)
         if t > 0:
             variance = torch.sqrt(beta_t) * torch.randn_like(x_t)
         else:
