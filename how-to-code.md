@@ -30,7 +30,7 @@ uv --version
 cd diffusion-policy-reimplementation
 
 # Pin Python version
-uv python pin 3.9
+uv python pin 3.10
 
 # Initialise the project (creates pyproject.toml)
 uv init --no-readme
@@ -42,7 +42,7 @@ Replace the generated `pyproject.toml` with this:
 [project]
 name = "diffusion-policy-reimplement"
 version = "0.1.0"
-requires-python = "==3.9.*"
+requires-python = "==3.10.*"
 dependencies = [
     "torch",
     "torchvision",
