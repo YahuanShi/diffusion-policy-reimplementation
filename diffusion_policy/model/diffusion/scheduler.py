@@ -1,7 +1,7 @@
 # DDPM forward and reverse process.
 
 import torch
-import numpy as np
+from types import SimpleNamespace
 
 class DDPMScheduler:
     def __init__(self, num_train_timesteps=100, beta_start=0.0001, beta_end=0.02, beta_schedule='squaredcos_cap_v2'):
@@ -9,7 +9,7 @@ class DDPMScheduler:
 
         if beta_schedule == 'linear':
             # T evenly-spaced values from beta_start to beta_end
-            self.betas = torch.linspace(beta_start, beta_end, num_train_timesteps, dtype = torch.float64)
+            self.betas = torch.linspace(beta_start, beta_end, num_train_timesteps).float()
 
         elif beta_schedule == 'squaredcos_cap_v2':
             # Cosine schedule (Nichol & Dhariwal 2021) - more stable than linear
@@ -63,16 +63,12 @@ class DDPMScheduler:
         if t > 0:
             variance = torch.sqrt(beta_t) * torch.randn_like(x_t)
         else:
-            variance = 0
+            variance = torch.zeros_like(x_t)
         
         prev_sample = pred_prev_mean + variance
 
         # Return an object with .prev_sample to match the diffusers API
-        class Output:
-            pass
-        out = Output()
-        out.prev_sample = prev_sample
-        return out
+        return SimpleNamespace(prev_sample = prev_sample)
 
     def set_timesteps(self, num_inference_steps):
         # Called before the inference loop to set how many denoising steps to run
