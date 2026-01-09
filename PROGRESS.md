@@ -7,9 +7,9 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 
 ### Stage 1: Diffusion Model Core
 - [x] Step 1.0: SinusoidalPosEmb, Conv1dBlock, Downsample1d, Upsample1d — `2026-01-04T10:30:00`
-- [ ] Step 1.1: ConditionalResidualBlock1D (FiLM conditioning) — `2026-01-05T14:20:00`
-- [ ] Step 1.2: ConditionalUnet1D (full denoiser) — `2026-01-07T11:45:00`
-- [ ] Step 1.3: Validate with experiments/01_ddpm_toy.py — `2026-01-08T16:00:00`
+- [x] Step 1.1: ConditionalResidualBlock1D (FiLM conditioning) — `2026-01-05T14:20:00`
+- [x] Step 1.2: ConditionalUnet1D (full denoiser) — `2026-01-07T11:45:00`
+- [x] Step 1.3: Validate with experiments/01_ddpm_toy.py — `2026-01-08T16:00:00`
 
 ### Stage 2: Dataset Pipeline (Pick and Place)
 - [ ] Step 2.1: ReplayBuffer (Zarr loading) — `2026-01-09T09:30:00`
