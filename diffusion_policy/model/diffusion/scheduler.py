@@ -34,6 +34,12 @@ class DDPMScheduler:
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
+        # ᾱ_{t-1} for posterior variance computation (ᾱ_{-1} = 1 by convention)
+        self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), self.alphas_cumprod[:-1]])
+        # β̃_t = β_t · (1 - ᾱ_{t-1}) / (1 - ᾱ_t)  — "fixed small" posterior variance
+        self.posterior_variance = self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        self.posterior_variance[0] = 0.0  # no noise at t=0
+
         self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
 
     def add_noise(self, x0, noise, timesteps):
@@ -49,26 +55,32 @@ class DDPMScheduler:
         # x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε
         return sqrt_alpha_prod * x0 + sqrt_one_minus_prod * noise
     
-    def step(self, eps_pred, t, x_t):
-        # Scalar values for this timestep
-        beta_t = self.betas[t]
-        alpha_t = self.alphas[t]
-        sqrt_one_minus_alphas_prod = self.sqrt_one_minus_alphas_cumprod[t]
+    def step(self, eps_pred, t, x_t, clip_sample=True, clip_range=1.0):
+        alpha_prod_t = self.alphas_cumprod[t]
+        alpha_prod_t_prev = self.alphas_cumprod_prev[t]
+        beta_prod_t = 1.0 - alpha_prod_t
 
-        # Predicted clean signal x_0 estimate (rearranging the forward formula)
-        # x_{t-1} mean (no noise term yet)
-        pred_prev_mean = (1.0 / torch.sqrt(alpha_t)) * (x_t - (beta_t / sqrt_one_minus_alphas_prod) *eps_pred)
+        # 1. Predict x_0 from noise prediction
+        pred_x0 = (x_t - beta_prod_t.sqrt() * eps_pred) / alpha_prod_t.sqrt()
 
-        # Add variance (skip at t=0, no noise on the last step)
+        # 2. Clip predicted x_0 to prevent divergence at high noise levels
+        if clip_sample:
+            pred_x0 = pred_x0.clamp(-clip_range, clip_range)
+
+        # 3. Compute x_{t-1} mean using posterior q(x_{t-1} | x_t, x_0)
+        #    μ̃_t = (√ᾱ_{t-1} · β_t)/(1-ᾱ_t) · x̂_0 + (√α_t · (1-ᾱ_{t-1}))/(1-ᾱ_t) · x_t
+        pred_x0_coeff = alpha_prod_t_prev.sqrt() * self.betas[t] / beta_prod_t
+        current_sample_coeff = self.alphas[t].sqrt() * (1.0 - alpha_prod_t_prev) / beta_prod_t
+        pred_prev_mean = pred_x0_coeff * pred_x0 + current_sample_coeff * x_t
+
+        # 4. Add posterior variance noise
         if t > 0:
-            variance = torch.sqrt(beta_t) * torch.randn_like(x_t)
+            variance = self.posterior_variance[t].sqrt() * torch.randn_like(x_t)
         else:
             variance = torch.zeros_like(x_t)
-        
-        prev_sample = pred_prev_mean + variance
 
-        # Return an object with .prev_sample to match the diffusers API
-        return SimpleNamespace(prev_sample = prev_sample)
+        prev_sample = pred_prev_mean + variance
+        return SimpleNamespace(prev_sample=prev_sample)
 
     def set_timesteps(self, num_inference_steps):
         # Called before the inference loop to set how many denoising steps to run
@@ -105,8 +117,8 @@ if __name__ == '__main__':
     t = torch.tensor([50])
     xt = scheduler.add_noise(x0, noise, t)
 
-    # One reserse step with the TRUE noise (oracle, not a learned model)
-    out = scheduler.step(noise, 50, xt)
+    # One reverse step with the TRUE noise (oracle, not a learned model)
+    out = scheduler.step(noise, 50, xt, clip_sample=False)
     print(f"x0      = {x0.item():.4f}")
     print(f"x_{50}  = {xt.item():.4f}")
     print(f"x_{49}  = {out.prev_sample.item():.4f}") # should be closer to x0 than xt
