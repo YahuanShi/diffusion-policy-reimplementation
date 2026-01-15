@@ -19,7 +19,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 
 ### Stage 3: Lowdim Policy
 - [x] Step 3.1: DiffusionUnetLowdimPolicy (compute_loss + predict_action) — `2026-01-14T11:00:00`
-- [ ] Step 3.2: Validate with experiments/03_lowdim_train.py — `2026-01-15T17:20:00`
+- [x] Step 3.2: Validate with experiments/03_lowdim_train.py — `2026-01-15T17:20:00`
 
 ### Stage 4: Vision Encoder
 - [ ] Step 4.1: MultiImageObsEncoder (ResNet-18 + GroupNorm) — `2026-01-17T14:30:00`
