@@ -1,26 +1,146 @@
-# Stage 4 — how-to-code.md
-# Encode RGB images + low-dim observations into a flat feature vector.
-# CRITICAL: use GroupNorm, not BatchNorm (incompatible with EMA).
-# Reference: diffusion_policy-main/diffusion_policy/model/vision/multi_image_obs_encoder.py
-
+import copy
 import torch
 import torch.nn as nn
+import torchvision
 
 
-def replace_batchnorm_with_groupnorm(module, num_groups=32):
-    # Recursively replace all BatchNorm2d → GroupNorm in a module
-    ...
+def get_resnet(name='resnet18', weights=None):
+    func = getattr(torchvision.models, name)
+    resnet = func(weights=weights)
+    resnet.fc = nn.Identity()
+    return resnet
+
+
+def replace_submodules(root_module, predicate, func):
+    if predicate(root_module):
+        return func(root_module)
+    bn_list = [k.split('.') for k, m
+               in root_module.named_modules(remove_duplicate=True)
+               if predicate(m)]
+    for *parent, k in bn_list:
+        parent_module = root_module
+        if len(parent) > 0:
+            parent_module = root_module.get_submodule('.'.join(parent))
+        if isinstance(parent_module, nn.Sequential):
+            src_module = parent_module[int(k)]
+        else:
+            src_module = getattr(parent_module, k)
+        tgt_module = func(src_module)
+        if isinstance(parent_module, nn.Sequential):
+            parent_module[int(k)] = tgt_module
+        else:
+            setattr(parent_module, k, tgt_module)
+    return root_module
 
 
 class MultiImageObsEncoder(nn.Module):
-    def __init__(self, image_shape=(3, 96, 96), lowdim_dim=2, n_obs_steps=2):
+    def __init__(self, shape_meta,
+                 rgb_model_name='resnet18',
+                 rgb_model_weights=None,
+                 use_group_norm=True,
+                 share_rgb_model=False,
+                 imagenet_norm=False,
+                 resize_shape=None,
+                 crop_shape=None):
         super().__init__()
-        self.n_obs_steps = n_obs_steps
-        self.backbone = ...      # ResNet-18 with GroupNorm
-        self.output_dim = ...    # n_obs_steps * (512 + lowdim_dim)
+
+        rgb_keys = []
+        low_dim_keys = []
+        key_model_map = nn.ModuleDict()
+        key_transform_map = nn.ModuleDict()
+        key_shape_map = {}
+
+        def _make_rgb_model():
+            m = get_resnet(rgb_model_name, weights=rgb_model_weights)
+            if use_group_norm:
+                m = replace_submodules(
+                    m,
+                    predicate=lambda x: isinstance(x, nn.BatchNorm2d),
+                    func=lambda x: nn.GroupNorm(
+                        num_groups=x.num_features // 16,
+                        num_channels=x.num_features),
+                )
+            return m
+
+        obs_shape_meta = shape_meta['obs']
+        for key, attr in obs_shape_meta.items():
+            shape = tuple(attr['shape'])
+            obs_type = attr.get('type', 'low_dim')
+            key_shape_map[key] = shape
+
+            if obs_type == 'rgb':
+                rgb_keys.append(key)
+                if not share_rgb_model:
+                    key_model_map[key] = _make_rgb_model()
+
+                transforms = []
+                if resize_shape is not None:
+                    h, w = resize_shape if not isinstance(resize_shape, dict) else resize_shape[key]
+                    transforms.append(torchvision.transforms.Resize(size=(h, w)))
+                if crop_shape is not None:
+                    h, w = crop_shape if not isinstance(crop_shape, dict) else crop_shape[key]
+                    transforms.append(torchvision.transforms.CenterCrop(size=(h, w)))
+                if imagenet_norm:
+                    transforms.append(torchvision.transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+                key_transform_map[key] = nn.Sequential(*transforms) if transforms else nn.Identity()
+
+            elif obs_type == 'low_dim':
+                low_dim_keys.append(key)
+            else:
+                raise ValueError(f"Unknown obs type: {obs_type}")
+
+        if share_rgb_model:
+            key_model_map['rgb'] = _make_rgb_model()
+
+        self.rgb_keys = sorted(rgb_keys)
+        self.low_dim_keys = sorted(low_dim_keys)
+        self.key_model_map = key_model_map
+        self.key_transform_map = key_transform_map
+        self.key_shape_map = key_shape_map
+        self.share_rgb_model = share_rgb_model
+        self.shape_meta = shape_meta
 
     def forward(self, obs_dict):
-        # obs_dict['image']:     [B, To, 3, H, W]
-        # obs_dict['agent_pos']: [B, To, 2]
-        # Returns: [B, output_dim]
-        ...
+        batch_size = None
+        features = []
+
+        if self.share_rgb_model:
+            imgs = []
+            for key in self.rgb_keys:
+                img = obs_dict[key]
+                if batch_size is None:
+                    batch_size = img.shape[0]
+                img = self.key_transform_map[key](img)
+                imgs.append(img)
+            imgs = torch.cat(imgs, dim=0)
+            feature = self.key_model_map['rgb'](imgs)
+            feature = feature.reshape(-1, batch_size, *feature.shape[1:])
+            feature = torch.moveaxis(feature, 0, 1)
+            feature = feature.reshape(batch_size, -1)
+            features.append(feature)
+        else:
+            for key in self.rgb_keys:
+                img = obs_dict[key]
+                if batch_size is None:
+                    batch_size = img.shape[0]
+                img = self.key_transform_map[key](img)
+                feature = self.key_model_map[key](img)
+                features.append(feature)
+
+        for key in self.low_dim_keys:
+            data = obs_dict[key]
+            if batch_size is None:
+                batch_size = data.shape[0]
+            features.append(data)
+
+        return torch.cat(features, dim=-1)
+
+    @torch.no_grad()
+    def output_shape(self):
+        example = {}
+        for key, attr in self.shape_meta['obs'].items():
+            shape = tuple(attr['shape'])
+            example[key] = torch.zeros((1,) + shape)
+        out = self.forward(example)
+        return out.shape[1:]
