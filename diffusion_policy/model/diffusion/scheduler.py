@@ -43,39 +43,32 @@ class DDPMScheduler:
         self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
 
     def add_noise(self, x0, noise, timesteps):
-        # Index the precomputed values by timestep for each batch item
-        sqrt_alpha_prod = self.sqrt_alphas_cumprod[timesteps]  # [B]
-        sqrt_one_minus_prod = self.sqrt_one_minus_alphas_cumprod[timesteps]  # [B]
+        sqrt_alpha_prod = self.sqrt_alphas_cumprod[timesteps].to(x0.device)
+        sqrt_one_minus_prod = self.sqrt_one_minus_alphas_cumprod[timesteps].to(x0.device)
 
-        # Reshape [B] -> [B,1,1] so it broadcasts over [B,H,D]
         while sqrt_alpha_prod.dim() < x0.dim():
             sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
             sqrt_one_minus_prod = sqrt_one_minus_prod.unsqueeze(-1)
 
-        # x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε
         return sqrt_alpha_prod * x0 + sqrt_one_minus_prod * noise
     
     def step(self, eps_pred, t, x_t, clip_sample=True, clip_range=1.0):
-        alpha_prod_t = self.alphas_cumprod[t]
-        alpha_prod_t_prev = self.alphas_cumprod_prev[t]
+        device = x_t.device
+        alpha_prod_t = self.alphas_cumprod[t].to(device)
+        alpha_prod_t_prev = self.alphas_cumprod_prev[t].to(device)
         beta_prod_t = 1.0 - alpha_prod_t
 
-        # 1. Predict x_0 from noise prediction
         pred_x0 = (x_t - beta_prod_t.sqrt() * eps_pred) / alpha_prod_t.sqrt()
 
-        # 2. Clip predicted x_0 to prevent divergence at high noise levels
         if clip_sample:
             pred_x0 = pred_x0.clamp(-clip_range, clip_range)
 
-        # 3. Compute x_{t-1} mean using posterior q(x_{t-1} | x_t, x_0)
-        #    μ̃_t = (√ᾱ_{t-1} · β_t)/(1-ᾱ_t) · x̂_0 + (√α_t · (1-ᾱ_{t-1}))/(1-ᾱ_t) · x_t
-        pred_x0_coeff = alpha_prod_t_prev.sqrt() * self.betas[t] / beta_prod_t
-        current_sample_coeff = self.alphas[t].sqrt() * (1.0 - alpha_prod_t_prev) / beta_prod_t
+        pred_x0_coeff = alpha_prod_t_prev.sqrt() * self.betas[t].to(device) / beta_prod_t
+        current_sample_coeff = self.alphas[t].to(device).sqrt() * (1.0 - alpha_prod_t_prev) / beta_prod_t
         pred_prev_mean = pred_x0_coeff * pred_x0 + current_sample_coeff * x_t
 
-        # 4. Add posterior variance noise
         if t > 0:
-            variance = self.posterior_variance[t].sqrt() * torch.randn_like(x_t)
+            variance = self.posterior_variance[t].to(device).sqrt() * torch.randn_like(x_t)
         else:
             variance = torch.zeros_like(x_t)
 
