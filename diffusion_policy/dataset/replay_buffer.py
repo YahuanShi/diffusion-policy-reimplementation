@@ -1,3 +1,18 @@
+"""
+Zarr-based replay buffer — read-only interface for episode-structured demonstration data.
+
+Zarr format layout:
+  root/
+    data/
+      action:  (N_total, action_dim)    — all episodes concatenated
+      state:   (N_total, state_dim)
+    meta/
+      episode_ends: [end_0, end_1, ...]  — cumulative end indices
+
+Episode i spans data[start_i : end_i], where start_i = episode_ends[i-1] (0 for i=0).
+This flat-concatenated layout allows efficient slicing across episodes.
+"""
+
 import zarr
 import numpy as np
 

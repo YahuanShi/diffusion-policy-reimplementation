@@ -1,3 +1,10 @@
+"""
+Lowdim policy training workspace — trains low-dim diffusion policy using zarr format data.
+
+Data pipeline: zarr → ReplayBuffer → SequenceSampler → DataLoader
+(Legacy pipeline; the new image policy uses LeRobot format, see workspace_image.py)
+"""
+
 import os
 import torch
 import numpy as np
@@ -17,7 +24,9 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
           obs_key='state', action_key='action',
           lr=1e-4, lr_warmup_steps=500,
           ema_power=2/3, checkpoint_every=100,
-          output_dir='outputs'):
+          output_dir='outputs',
+          use_wandb=True,
+          wandb_run_name=None):
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -79,6 +88,27 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
     print(f"Model params: {n_params:,}")
     print(f"Training for {num_epochs} epochs ({total_steps} steps)")
 
+    if use_wandb:
+        import wandb
+        wandb.init(
+            project='Diffusion-Policy',
+            name=wandb_run_name,
+            config={
+                'mode': 'lowdim',
+                'zarr_path': zarr_path,
+                'num_episodes': buf.n_episodes,
+                'batch_size': batch_size,
+                'num_epochs': num_epochs,
+                'horizon': horizon,
+                'n_obs_steps': n_obs_steps,
+                'n_action_steps': n_action_steps,
+                'lr': lr,
+                'obs_dim': obs_dim,
+                'action_dim': action_dim,
+                'n_params': n_params,
+            },
+        )
+
     global_step = 0
     for epoch in range(num_epochs):
         policy.train()
@@ -97,10 +127,23 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
             lr_scheduler.step()
             ema.step(policy)
 
-            epoch_losses.append(loss.item())
+            step_loss = loss.item()
+            epoch_losses.append(step_loss)
             global_step += 1
 
+            if use_wandb:
+                wandb.log({
+                    'train/loss': step_loss,
+                    'train/lr': optimizer.param_groups[0]['lr'],
+                    'train/ema_decay': ema.decay,
+                }, step=global_step)
+
         avg_loss = np.mean(epoch_losses)
+        if use_wandb:
+            wandb.log({
+                'epoch/loss': avg_loss,
+                'epoch/epoch': epoch,
+            }, step=global_step)
         if epoch % 50 == 0 or epoch == num_epochs - 1:
             lr_now = optimizer.param_groups[0]['lr']
             print(f"epoch {epoch:>5}/{num_epochs}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f}")
@@ -125,5 +168,7 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
         'policy_state_dict': policy.state_dict(),
         'normalizer_state_dict': normalizer.state_dict(),
     }, final_path)
+    if use_wandb:
+        wandb.finish()
     print(f"Training complete. Final model: {final_path}")
     return policy

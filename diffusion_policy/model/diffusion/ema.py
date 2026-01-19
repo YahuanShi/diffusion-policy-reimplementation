@@ -1,3 +1,16 @@
+"""
+Exponential Moving Average (EMA) model — stabilizes training and improves inference quality.
+
+Core idea:
+  Maintain a running average of model parameters: theta_ema = decay * theta_ema + (1-decay) * theta
+  Use the original model for gradient computation during training, EMA model for inference.
+
+Decay schedule (power-law warmup):
+  decay(step) = 1 - (1 + step/inv_gamma)^(-power)
+  Early training: decay ~ 0 (directly copies new params), later: decay -> 1 (strong smoothing)
+  power=2/3 is the Diffusion Policy default.
+"""
+
 import copy
 import torch
 
@@ -18,6 +31,7 @@ class EMAModel:
         self.decay = 0.0
 
     def get_decay(self, optimization_step):
+        """Power-law warmup: decay = 1 - (1 + step/inv_gamma)^(-power)"""
         step = max(0, optimization_step - self.update_after_step - 1)
         if step <= 0:
             return 0.0
@@ -26,6 +40,7 @@ class EMAModel:
 
     @torch.no_grad()
     def step(self, new_model):
+        """θ_ema = decay · θ_ema + (1-decay) · θ_new"""
         self.decay = self.get_decay(self.optimization_step)
         for param, ema_param in zip(new_model.parameters(),
                                      self.averaged_model.parameters()):
