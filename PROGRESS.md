@@ -26,7 +26,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 - [x] Step 4.2: Encoder unit test — `2026-01-18T10:15:00`
 
 ### Stage 5: Image/Hybrid Policy
-- [ ] Step 5.1: DiffusionUnetHybridImagePolicy — `2026-01-19T16:45:00`
+- [x] Step 5.1: DiffusionUnetHybridImagePolicy — `2026-01-19T16:45:00`
 - [ ] Step 5.2: Validate hybrid policy — `2026-01-21T11:30:00`
 
 ### Stage 6: Training + EMA
