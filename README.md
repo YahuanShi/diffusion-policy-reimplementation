@@ -12,18 +12,14 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 This is a **from-scratch reimplementation** of Diffusion Policy, not a fork. Every line of code is written by hand after studying the original paper and codebase. The primary goal is to deeply understand how diffusion models work in robot action space; the secondary goal is to provide a clean, minimal codebase others can learn from.
 
-For a step-by-step learning guide, see:
-- [reimplementation-guide.md](reimplementation-guide.md) — core concepts and architecture analysis
-- [how-to-code.md](how-to-code.md) — hands-on coding walkthrough for each component
-
 ### Differences from the Original
 
 | Aspect | [Original (Chi et al.)](https://github.com/real-stanford/diffusion_policy) | This Project |
 |--------|----------------------------------------------------------------------------|--------------|
 | **Code origin** | Complete framework (~20k LOC) | From-scratch rewrite (~2k LOC) |
 | **Config system** | Hydra + YAML (dozens of config files) | Plain argparse (one `train.py`) |
-| **Data format** | Zarr only | Zarr + LeRobot v3 (modern standard) |
-| **Wandb** | Deeply coupled, required | Optional (`--wandb` flag) |
+| **Data format** | Zarr only | LeRobot v3 (modern standard) |
+| **Wandb** | Deeply coupled, required | Enabled by default, `--no_wandb` to disable |
 | **State normalization** | Action only | Action + state (inspired by OpenPI) |
 | **Comments** | Minimal | Learning-note style: explains the *why* behind each design |
 | **Environment** | conda + pip + manual setup | `bash setup.sh` one-click (uv) |
@@ -79,19 +75,18 @@ This receding-horizon control reduces compounding errors vs. single-step predict
 
 ---
 
-#### 2.1.3 Two Network Backbones
+#### 2.1.3 Network Backbone
 
 | Backbone | Class | Conditioning Mechanism |
 | --- | --- | --- |
 | **1D U-Net** | `ConditionalUnet1D` | Global: concat obs_emb + step_emb via FiLM |
-| **Transformer** | `TransformerForDiffusion` | Cross-attention over obs tokens |
 
-This project implements the **1D U-Net** backbone.
+The original paper also supports a Transformer backbone with cross-attention. This project implements the **1D U-Net** backbone.
 
-#### 2.1.4 Two Observation Modes
+#### 2.1.4 Observation Mode
+
 | Mode | Input | Vision Encoder |
 | --- | --- | --- |
-| **Lowdim** | State vector (joint angles, pos, etc.) | None |
 | **Image / Hybrid** | RGB image + low-dim state | ResNet-18 (GroupNorm) |
 
 ---
@@ -109,31 +104,24 @@ This project implements the **1D U-Net** backbone.
 │   │       └── encoder.py          # Multi-image observation encoder (ResNet18 + GroupNorm)
 │   ├── dataset/
 │   │   ├── normalizer.py           # Linear normalizer (limits/gaussian modes)
-│   │   ├── lerobot_wrapper.py      # LeRobot dataset wrapper for image policy
-│   │   ├── replay_buffer.py        # Zarr-based replay buffer for lowdim policy
-│   │   └── sampler.py              # Sliding window sequence sampler with padding
+│   │   └── lerobot_wrapper.py      # LeRobot dataset wrapper for image policy
 │   └── policy/
-│       ├── image.py                # Image-conditioned diffusion policy
-│       └── lowdim.py               # Low-dim observation diffusion policy
+│       └── image.py                # Image-conditioned diffusion policy
 ├── training/
-│   ├── workspace.py                # Lowdim training workspace (zarr pipeline)
 │   └── workspace_image.py          # Image training workspace (LeRobot pipeline)
 ├── eval/
 │   └── runner.py                   # Evaluation runner with action chunking loop
+├── tests/
+│   └── test_integration.py         # End-to-end pipeline smoke test
 ├── scripts/
 │   └── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
-├── train.py                        # Training entry point (--mode lowdim/image)
-├── eval.py                         # Evaluation entry point
-├── experiments/                    # Stage-by-stage validation scripts
+├── experiments/                     # Stage-by-stage validation scripts
 │   ├── 01_ddpm_toy.py              # DDPM on toy 1D data
-│   ├── 02_dataset_test.py          # Zarr dataset pipeline test
-│   ├── 03_lowdim_train.py          # Lowdim policy training test
 │   ├── 04_encoder_test.py          # Vision encoder unit test
 │   ├── 05_image_policy_test.py     # Image policy integration test
-│   ├── 06_train_smoke.py           # Full training smoke test
-│   └── 07_eval_test.py             # Evaluation pipeline test
-├── reimplementation-guide.md       # Core concepts and architecture deep-dive
-├── how-to-code.md                  # Hands-on coding guide for each stage
+│   └── 06_train_smoke.py           # Full training smoke test
+├── train.py                        # Training entry point
+├── eval.py                         # Evaluation entry point
 ├── setup.sh                        # One-click environment setup (uv + DP venv)
 └── pyproject.toml                  # Dependencies and project metadata
 ```
@@ -156,9 +144,9 @@ Requires Python 3.10+ and a CUDA-capable GPU for training.
 
 ## 5. Usage
 
-### Training (Image Policy, LeRobot format)
+### Training
 ```bash
-python train.py --mode image \
+python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
     --epochs 3000 --batch 8 --resize 224 224 \
     --device cuda --output_dir outputs/my_run
@@ -166,16 +154,17 @@ python train.py --mode image \
 
 Wandb logging is enabled by default (project: `Diffusion-Policy`). Use `--no_wandb` to disable, or `--wandb_run_name` to set a custom run name.
 
-### Training (Lowdim Policy, zarr format)
+### Resume Training
 ```bash
-python train.py --mode lowdim \
-    --data data/demo.zarr \
+python train.py \
+    --repo_id local/my_dataset --root ./data/my_dataset \
+    --resume outputs/my_run/checkpoint_epoch500.pt \
     --epochs 3000 --device cuda
 ```
 
 ### Evaluation
 ```bash
-python eval.py --checkpoint outputs/policy_final.pt --mock
+python eval.py --checkpoint outputs/policy_final.pt --device cuda --mock
 ```
 
 ### Data Conversion (HDF5 → LeRobot)
