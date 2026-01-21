@@ -19,7 +19,9 @@ if __name__ == '__main__':
     parser.add_argument('--state_key', default='observation.state')
     parser.add_argument('--image_keys', nargs='*', default=None)
     parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'),
-                        help='Resize images to (H, W) before feeding to encoder')
+                        help='Resize images to (H, W) before cropping')
+    parser.add_argument('--crop', type=int, nargs=2, default=None, metavar=('H', 'W'),
+                        help='Crop images to (H, W) — random in training, center at eval')
     parser.add_argument('--num_workers', type=int, default=2)
 
     # Training
@@ -57,6 +59,7 @@ if __name__ == '__main__':
         checkpoint_every=args.checkpoint_every,
         num_workers=args.num_workers,
         resize_shape=tuple(args.resize) if args.resize else None,
+        crop_shape=tuple(args.crop) if args.crop else None,
         use_wandb=not args.no_wandb,
         wandb_run_name=args.wandb_run_name,
         resume_checkpoint=args.resume,

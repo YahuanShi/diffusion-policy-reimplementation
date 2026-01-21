@@ -1,19 +1,24 @@
 """
 Image-conditioned Diffusion Policy — the core implementation for image observations.
 
-Training:
+Training (always DDPM forward process):
   1. Image observations → ResNet encoding → flattened obs_features
-  2. Action sequence normalized → add noise → U-Net predicts noise → MSE loss
+  2. Normalize action sequence → sample random t → add noise via DDPM forward process
+  3. U-Net predicts noise ε_θ(x_t, t, obs) → MSE loss against true noise
 
-Inference:
+Inference (DDIM reverse process by default):
   1. Encode current observations → obs_features (global conditioning)
-  2. Start from pure noise x_T, DDPM reverse denoising → normalized action sequence
-  3. Unnormalize → extract action[To:To+n_action_steps] as executed actions
+  2. Start from pure noise x_T ~ N(0,I)
+  3. Run DDIM reverse: 16 deterministic steps → normalized action sequence
+     (DDPMScheduler also works; DDIM is ~6× faster with same quality)
+  4. Unnormalize → extract action[To : To+n_action_steps] as the executed chunk
 
-Key design — obs_as_global_cond (observation as global conditioning):
-  - Obs features are NOT concatenated to U-Net input; instead injected via FiLM into every ResBlock
-  - U-Net only processes the action sequence, no need to handle obs-action alignment
-  - This is the core difference between Diffusion Policy and DDPM Image Generation
+Scheduler choice is made at load time (inference.py / eval.py), not here.
+This class accepts any scheduler implementing set_timesteps() / step().
+
+Key design — obs as global conditioning:
+  Obs features are injected via FiLM into every U-Net ResBlock, not concatenated
+  to the action sequence. The U-Net denoises actions only; obs acts as a global signal.
 """
 
 import torch
@@ -149,8 +154,8 @@ class DiffusionUnetImagePolicy(nn.Module):
           4. Extract action[To:To+n_action_steps] — skip timesteps corresponding to observations
 
         Timeline (horizon=16, To=2, n_action_steps=8):
-          [obs obs | act act act act act act act act | unused unused unused unused unused unused]
-           0   1     2   3   4   5   6   7   8   9    10  11  12  13  14  15
+          [obs obs | act act act act act act act act | (padding) ]
+           0   1     2   3   4   5   6   7   8   9    10 .. 15
                      ^^^ start=To        end=To+8 ^^^
         """
         B = next(iter(obs_dict.values())).shape[0]

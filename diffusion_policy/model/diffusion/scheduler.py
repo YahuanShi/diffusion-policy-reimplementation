@@ -1,17 +1,24 @@
 """
-DDPM (Denoising Diffusion Probabilistic Models) forward and reverse process.
+DDPM and DDIM schedulers — forward noise process and two reverse samplers.
 
-Core idea:
-  Training: add Gaussian noise to clean data x0 to get x_t, train network to predict the noise
-  Inference: start from pure noise x_T ~ N(0,I), iteratively denoise to recover x0
+Training always uses DDPM's forward process:
+  x_t = sqrt(ᾱ_t) * x0 + sqrt(1 - ᾱ_t) * ε,  ε ~ N(0, I)
+  Network learns ε_θ(x_t, t) to predict the noise; loss = MSE(ε_θ, ε)
 
-Key formulas:
-  Forward (add noise):  x_t = sqrt(alpha_bar_t) * x0 + sqrt(1 - alpha_bar_t) * eps
-  Reverse (denoise):    x_{t-1} = mu_tilde(x_t, eps_theta) + sigma_t * z
+Inference can use either sampler — both are compatible with the same trained weights:
 
-where alpha_bar_t = prod_{s=1}^{t} alpha_s,  alpha_t = 1 - beta_t
+  DDPMScheduler (stochastic, 100 steps):
+    x_{t-1} = μ̃(x_t, ε_θ) + σ_t · z,  z ~ N(0, I)
+    Adds noise at every step; requires T=100 denoising iterations.
 
-Reference: Ho et al. 2020 "Denoising Diffusion Probabilistic Models"
+  DDIMScheduler (deterministic, 16 steps):
+    x_{t-1} = √ᾱ_{t-1} · x̂₀ + √(1-ᾱ_{t-1}) · ε_θ
+    No stochastic noise term; 16 uniformly-spaced steps suffice → ~6× faster.
+    Preferred for deployment (inference.py, eval.py).
+
+References:
+  DDPM — Ho et al. 2020 (https://arxiv.org/abs/2006.11239)
+  DDIM — Song et al. 2020 (https://arxiv.org/abs/2010.02502)
 """
 
 import torch
@@ -113,8 +120,46 @@ class DDPMScheduler:
         return SimpleNamespace(prev_sample=prev_sample)
 
     def set_timesteps(self, num_inference_steps):
-        """Set inference timesteps. DDPM uses uniform spacing: T-1, T-2, ..., 0"""
-        self.timesteps = torch.arange(num_inference_steps - 1, -1, -1)
+        """Uniformly subsample T-1 → 0 over num_inference_steps steps."""
+        self.timesteps = torch.linspace(
+            self.num_train_timesteps - 1, 0, num_inference_steps
+        ).long()
+
+
+class DDIMScheduler(DDPMScheduler):
+    """
+    DDIM (Song et al. 2020) — deterministic reverse process.
+
+    Forward process is identical to DDPM; only the reverse step changes:
+      x0_hat  = (x_t - sqrt(1-a_t) * eps) / sqrt(a_t)        (recover clean sample)
+      x_{t-1} = sqrt(a_{t-1}) * x0_hat + sqrt(1-a_{t-1}) * eps  (deterministic, eta=0)
+
+    No stochastic noise term → 16 steps suffice instead of 100, ~6x faster at inference.
+    Fully compatible with DDPM checkpoints — training is unchanged.
+    """
+
+    def set_timesteps(self, num_inference_steps):
+        T = self.num_train_timesteps
+        self.timesteps = torch.linspace(T - 1, 0, num_inference_steps).long()
+        # alpha_cumprod for the step *preceding* each scheduled t
+        prev_ts = torch.cat([self.timesteps[1:], torch.zeros(1, dtype=torch.long)])
+        self._alpha_prev = self.alphas_cumprod[prev_ts].clone()
+        self._alpha_prev[-1] = 1.0  # alpha_{t=-1} = 1 by convention (fully clean signal)
+        self._t_idx = {int(t): i for i, t in enumerate(self.timesteps)}
+
+    def step(self, eps_pred, t, x_t, clip_sample=True, clip_range=1.0):
+        device = x_t.device
+        t_val = int(t)
+        alpha_t = self.alphas_cumprod[t_val].to(device)
+        alpha_t_prev = self._alpha_prev[self._t_idx[t_val]].to(device)
+
+        pred_x0 = (x_t - (1 - alpha_t).sqrt() * eps_pred) / alpha_t.sqrt()
+        if clip_sample:
+            pred_x0 = pred_x0.clamp(-clip_range, clip_range)
+
+        prev_sample = alpha_t_prev.sqrt() * pred_x0 + (1 - alpha_t_prev).sqrt() * eps_pred
+        return SimpleNamespace(prev_sample=prev_sample)
+
 
 if __name__ == '__main__':
     scheduler = DDPMScheduler(num_train_timesteps = 100)

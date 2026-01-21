@@ -22,7 +22,7 @@ def test_single_camera():
     bn = sum(1 for m in encoder.modules() if isinstance(m, nn.BatchNorm2d))
     gn = sum(1 for m in encoder.modules() if isinstance(m, nn.GroupNorm))
     assert bn == 0, f"Found {bn} BatchNorm2d (should be 0)"
-    assert gn > 0, f"No GroupNorm found"
+    assert gn > 0, "No GroupNorm found"
 
     out_shape = encoder.output_shape()
     assert out_shape == torch.Size([514]), f"Expected (514,), got {out_shape}"
