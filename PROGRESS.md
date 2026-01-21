@@ -27,7 +27,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 
 ### Stage 5: Image/Hybrid Policy
 - [x] Step 5.1: DiffusionUnetHybridImagePolicy — `2026-01-19T16:45:00`
-- [ ] Step 5.2: Validate hybrid policy — `2026-01-21T11:30:00`
+- [x] Step 5.2: Validate hybrid policy — `2026-01-21T11:30:00`
 
 ### Stage 6: Training + EMA
 - [ ] Step 6.1: EMAModel — `2026-01-22T09:50:00`
