@@ -30,7 +30,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 - [x] Step 5.2: Validate hybrid policy — `2026-01-21T11:30:00`
 
 ### Stage 6: Training + EMA
-- [ ] Step 6.1: EMAModel — `2026-01-22T09:50:00`
+- [x] Step 6.1: EMAModel — `2026-01-22T09:50:00`
 - [ ] Step 6.2: TrainWorkspace (full training loop) — `2026-01-23T14:10:00`
 - [ ] Step 6.3: Smoke test training — `2026-01-24T10:30:00`
 
