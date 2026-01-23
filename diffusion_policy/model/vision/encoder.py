@@ -18,7 +18,7 @@ import torchvision
 import torchvision.transforms.functional as TF
 
 
-def get_resnet(name='resnet18', weights=None):
+def get_resnet(name="resnet18", weights=None):
     func = getattr(torchvision.models, name)
     resnet = func(weights=weights)
     resnet.fc = nn.Identity()
@@ -29,13 +29,15 @@ def replace_submodules(root_module, predicate, func):
     """Replace submodules matching predicate. Used for BatchNorm → GroupNorm swap."""
     if predicate(root_module):
         return func(root_module)
-    bn_list = [k.split('.') for k, m
-               in root_module.named_modules(remove_duplicate=True)
-               if predicate(m)]
+    bn_list = [
+        k.split(".")
+        for k, m in root_module.named_modules(remove_duplicate=True)
+        if predicate(m)
+    ]
     for *parent, k in bn_list:
         parent_module = root_module
         if len(parent) > 0:
-            parent_module = root_module.get_submodule('.'.join(parent))
+            parent_module = root_module.get_submodule(".".join(parent))
         if isinstance(parent_module, nn.Sequential):
             src_module = parent_module[int(k)]
         else:
@@ -65,15 +67,18 @@ class RandomCenterCrop(nn.Module):
 
 
 class MultiImageObsEncoder(nn.Module):
-    def __init__(self, shape_meta,
-                 rgb_model_name='resnet18',
-                 rgb_model_weights=None,
-                 use_group_norm=True,
-                 share_rgb_model=False,
-                 imagenet_norm=False,
-                 resize_shape=None,
-                 crop_shape=None,
-                 random_crop=False):
+    def __init__(
+        self,
+        shape_meta,
+        rgb_model_name="resnet18",
+        rgb_model_weights=None,
+        use_group_norm=True,
+        share_rgb_model=False,
+        imagenet_norm=False,
+        resize_shape=None,
+        crop_shape=None,
+        random_crop=False,
+    ):
         super().__init__()
 
         rgb_keys = []
@@ -89,44 +94,59 @@ class MultiImageObsEncoder(nn.Module):
                     m,
                     predicate=lambda x: isinstance(x, nn.BatchNorm2d),
                     func=lambda x: nn.GroupNorm(
-                        num_groups=x.num_features // 16,
-                        num_channels=x.num_features),
+                        num_groups=x.num_features // 16, num_channels=x.num_features
+                    ),
                 )
             return m
 
-        obs_shape_meta = shape_meta['obs']
+        obs_shape_meta = shape_meta["obs"]
         for key, attr in obs_shape_meta.items():
-            shape = tuple(attr['shape'])
-            obs_type = attr.get('type', 'low_dim')
+            shape = tuple(attr["shape"])
+            obs_type = attr.get("type", "low_dim")
             key_shape_map[key] = shape
 
-            if obs_type == 'rgb':
+            if obs_type == "rgb":
                 rgb_keys.append(key)
                 if not share_rgb_model:
                     key_model_map[key] = _make_rgb_model()
 
                 transforms = []
                 if resize_shape is not None:
-                    h, w = resize_shape if not isinstance(resize_shape, dict) else resize_shape[key]
+                    h, w = (
+                        resize_shape
+                        if not isinstance(resize_shape, dict)
+                        else resize_shape[key]
+                    )
                     transforms.append(torchvision.transforms.Resize(size=(h, w)))
                 if crop_shape is not None:
-                    h, w = crop_shape if not isinstance(crop_shape, dict) else crop_shape[key]
+                    h, w = (
+                        crop_shape
+                        if not isinstance(crop_shape, dict)
+                        else crop_shape[key]
+                    )
                     if random_crop:
                         transforms.append(RandomCenterCrop(size=(h, w)))
                     else:
-                        transforms.append(torchvision.transforms.CenterCrop(size=(h, w)))
+                        transforms.append(
+                            torchvision.transforms.CenterCrop(size=(h, w))
+                        )
                 if imagenet_norm:
-                    transforms.append(torchvision.transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
-                key_transform_map[key] = nn.Sequential(*transforms) if transforms else nn.Identity()
+                    transforms.append(
+                        torchvision.transforms.Normalize(
+                            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                        )
+                    )
+                key_transform_map[key] = (
+                    nn.Sequential(*transforms) if transforms else nn.Identity()
+                )
 
-            elif obs_type == 'low_dim':
+            elif obs_type == "low_dim":
                 low_dim_keys.append(key)
             else:
                 raise ValueError(f"Unknown obs type: {obs_type}")
 
         if share_rgb_model:
-            key_model_map['rgb'] = _make_rgb_model()
+            key_model_map["rgb"] = _make_rgb_model()
 
         self.rgb_keys = sorted(rgb_keys)
         self.low_dim_keys = sorted(low_dim_keys)
@@ -149,7 +169,7 @@ class MultiImageObsEncoder(nn.Module):
                 img = self.key_transform_map[key](img)
                 imgs.append(img)
             imgs = torch.cat(imgs, dim=0)
-            feature = self.key_model_map['rgb'](imgs)
+            feature = self.key_model_map["rgb"](imgs)
             feature = feature.reshape(-1, batch_size, *feature.shape[1:])
             feature = torch.moveaxis(feature, 0, 1)
             feature = feature.reshape(batch_size, -1)
@@ -174,8 +194,8 @@ class MultiImageObsEncoder(nn.Module):
     @torch.no_grad()
     def output_shape(self):
         example = {}
-        for key, attr in self.shape_meta['obs'].items():
-            shape = tuple(attr['shape'])
+        for key, attr in self.shape_meta["obs"].items():
+            shape = tuple(attr["shape"])
             example[key] = torch.zeros((1,) + shape)
         out = self.forward(example)
         return out.shape[1:]

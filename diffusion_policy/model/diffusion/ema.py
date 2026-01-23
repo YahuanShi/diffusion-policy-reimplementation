@@ -16,8 +16,15 @@ import torch
 
 
 class EMAModel:
-    def __init__(self, model, power=2/3, min_value=0.0, max_value=0.9999,
-                 update_after_step=0, inv_gamma=1.0):
+    def __init__(
+        self,
+        model,
+        power=2 / 3,
+        min_value=0.0,
+        max_value=0.9999,
+        update_after_step=0,
+        inv_gamma=1.0,
+    ):
         self.averaged_model = copy.deepcopy(model)
         self.averaged_model.eval()
         self.averaged_model.requires_grad_(False)
@@ -42,11 +49,13 @@ class EMAModel:
     def step(self, new_model):
         """θ_ema = decay · θ_ema + (1-decay) · θ_new, module-by-module to handle buffers."""
         self.decay = self.get_decay(self.optimization_step)
-        for module, ema_module in zip(new_model.modules(), self.averaged_model.modules()):
+        for module, ema_module in zip(
+            new_model.modules(), self.averaged_model.modules()
+        ):
             # Immediate parameters only (recurse=False avoids double-counting nested modules)
             for param, ema_param in zip(
-                    module.parameters(recurse=False),
-                    ema_module.parameters(recurse=False)):
+                module.parameters(recurse=False), ema_module.parameters(recurse=False)
+            ):
                 if not param.requires_grad:
                     ema_param.copy_(param.data)
                 else:
@@ -54,8 +63,8 @@ class EMAModel:
                     ema_param.add_(param.data, alpha=1 - self.decay)
             # Buffers (e.g. running_mean/var in BN, or any registered buffer)
             for buf, ema_buf in zip(
-                    module.buffers(recurse=False),
-                    ema_module.buffers(recurse=False)):
+                module.buffers(recurse=False), ema_module.buffers(recurse=False)
+            ):
                 ema_buf.copy_(buf.data)
         self.optimization_step += 1
 
@@ -63,22 +72,22 @@ class EMAModel:
         """Copy EMA weights and buffers back to model."""
         for module, ema_module in zip(model.modules(), self.averaged_model.modules()):
             for param, ema_param in zip(
-                    module.parameters(recurse=False),
-                    ema_module.parameters(recurse=False)):
+                module.parameters(recurse=False), ema_module.parameters(recurse=False)
+            ):
                 param.data.copy_(ema_param.data)
             for buf, ema_buf in zip(
-                    module.buffers(recurse=False),
-                    ema_module.buffers(recurse=False)):
+                module.buffers(recurse=False), ema_module.buffers(recurse=False)
+            ):
                 buf.data.copy_(ema_buf.data)
 
     def state_dict(self):
         return {
-            'averaged_model': self.averaged_model.state_dict(),
-            'optimization_step': self.optimization_step,
-            'decay': self.decay,
+            "averaged_model": self.averaged_model.state_dict(),
+            "optimization_step": self.optimization_step,
+            "decay": self.decay,
         }
 
     def load_state_dict(self, state_dict):
-        self.averaged_model.load_state_dict(state_dict['averaged_model'])
-        self.optimization_step = state_dict['optimization_step']
-        self.decay = state_dict['decay']
+        self.averaged_model.load_state_dict(state_dict["averaged_model"])
+        self.optimization_step = state_dict["optimization_step"]
+        self.decay = state_dict["decay"]
