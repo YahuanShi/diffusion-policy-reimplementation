@@ -13,6 +13,7 @@ the compounding error of single-step prediction.
 """
 
 from collections import deque
+
 import numpy as np
 import torch
 
@@ -25,12 +26,15 @@ def run_episode(env, policy, shape_meta, n_obs_steps, n_action_steps, max_steps=
     step = 0
 
     policy.eval()
+    device = next(policy.parameters()).device
     while not done and step < max_steps:
         # Build obs_dict matching policy's expected keys and shapes
         obs_dict = {}
-        for key in obs.keys():
+        for key in obs:
             stack = np.stack([o[key] for o in obs_deque])  # (T, ...)
-            obs_dict[key] = torch.tensor(stack, dtype=torch.float32).unsqueeze(0)
+            obs_dict[key] = torch.tensor(
+                stack, dtype=torch.float32, device=device
+            ).unsqueeze(0)
 
         with torch.no_grad():
             action_seq = policy.predict_action(obs_dict)
@@ -40,7 +44,7 @@ def run_episode(env, policy, shape_meta, n_obs_steps, n_action_steps, max_steps=
         for a_idx in range(min(n_action_steps, len(action_seq))):
             if done or step >= max_steps:
                 break
-            obs, reward, done, info = env.step(action_seq[a_idx])
+            obs, reward, done, _ = env.step(action_seq[a_idx])
             obs_deque.append(obs)
             total_reward += reward
             step += 1
