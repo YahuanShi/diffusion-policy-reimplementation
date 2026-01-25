@@ -83,7 +83,9 @@ class DDPMScheduler:
 
         self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
 
-    def add_noise(self, x0: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+    def add_noise(
+        self, x0: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
         """Forward process: x_t = sqrt(alpha_bar_t) * x0 + sqrt(1-alpha_bar_t) * eps"""
         t_cpu = timesteps.cpu()
         sqrt_alpha_prod = self.sqrt_alphas_cumprod[t_cpu].to(x0.device)

@@ -17,11 +17,11 @@ Data flow:
   obs_features ────────────────────── +-> concat -> global_cond -> FiLM into every ResBlock
 """
 
-from typing import Union
 import math
+
+import einops
 import torch
 import torch.nn as nn
-import einops
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -158,7 +158,7 @@ class ConditionalUnet1D(nn.Module):
         local_cond_dim=None,
         global_cond_dim=None,
         diffusion_step_embed_dim=256,
-        down_dims=[256, 512, 1024],
+        down_dims=(256, 512, 1024),
         kernel_size=3,
         n_groups=8,
         cond_predict_scale=False,
@@ -180,7 +180,7 @@ class ConditionalUnet1D(nn.Module):
         if global_cond_dim is not None:
             cond_dim += global_cond_dim
 
-        in_out = list(zip(all_dims[:-1], all_dims[1:]))
+        in_out = list(zip(all_dims[:-1], all_dims[1:], strict=True))
 
         self.local_cond_encoder = None
         if local_cond_dim is not None:
@@ -290,7 +290,7 @@ class ConditionalUnet1D(nn.Module):
     def forward(
         self,
         sample: torch.Tensor,
-        timestep: Union[torch.Tensor, float, int],
+        timestep: torch.Tensor | float | int,
         local_cond=None,
         global_cond=None,
         **kwargs,

@@ -5,11 +5,12 @@ Run: python -m pytest tests/ -v
 """
 
 import torch
+
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+from diffusion_policy.model.diffusion.ema import EMAModel
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
-from diffusion_policy.dataset.normalizer import LinearNormalizer
 from diffusion_policy.policy.image import DiffusionUnetImagePolicy
-from diffusion_policy.model.diffusion.ema import EMAModel
 
 B, TO, H = 4, 2, 16
 

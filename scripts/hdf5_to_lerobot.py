@@ -21,13 +21,12 @@ import argparse
 import os
 import re
 import shutil
+from pathlib import Path
 
 import h5py
 import numpy as np
-from pathlib import Path
-from tqdm import tqdm
-
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from tqdm import tqdm
 
 
 def get_episode_files(input_dir):

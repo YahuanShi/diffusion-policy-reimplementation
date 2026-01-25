@@ -6,13 +6,12 @@ Success criterion: the scatter plot toy_samples.png shows two distinct clusters.
 If you see one blob in the middle, the denoiser is not learning multimodality.
 """
 
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
-
 
 SCALE = 3.0  # data range: normalize [-3, 3] -> [-1, 1]
 

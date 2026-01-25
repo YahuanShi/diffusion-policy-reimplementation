@@ -9,6 +9,7 @@ Validates:
 """
 
 import torch
+
 from diffusion_policy.dataset.normalizer import LinearNormalizer
 
 
@@ -19,7 +20,9 @@ def test_round_trip():
 
     normalized = normalizer["action"].normalize(data)
     recovered = normalizer["action"].unnormalize(normalized)
-    assert torch.allclose(data, recovered, atol=1e-5), "normalize → unnormalize must be lossless"
+    assert torch.allclose(data, recovered, atol=1e-5), (
+        "normalize → unnormalize must be lossless"
+    )
 
 
 def test_output_range():

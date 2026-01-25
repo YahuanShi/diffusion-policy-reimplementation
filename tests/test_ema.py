@@ -10,6 +10,7 @@ Validates:
 
 import torch
 import torch.nn as nn
+
 from diffusion_policy.model.diffusion.ema import EMAModel
 
 
@@ -59,7 +60,7 @@ def test_decay_increases():
 def test_step_count():
     model = nn.Linear(4, 2)
     ema = EMAModel(model)
-    for i in range(15):
+    for _ in range(15):
         ema.step(model)
     assert ema.optimization_step == 15
 
@@ -80,6 +81,6 @@ def test_buffers_copied():
     model.running_mean.fill_(5.0)
     ema.step(model)
 
-    assert torch.allclose(
-        ema.averaged_model.running_mean, torch.tensor([5.0, 5.0])
-    ), "Buffers should be hard-copied, not EMA-smoothed"
+    assert torch.allclose(ema.averaged_model.running_mean, torch.tensor([5.0, 5.0])), (
+        "Buffers should be hard-copied, not EMA-smoothed"
+    )
