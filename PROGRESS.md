@@ -35,7 +35,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 - [x] Step 6.3: Smoke test training — `2026-01-24T10:30:00`
 
 ### Stage 7: Evaluation
-- [ ] Step 7.1: PickPlaceRunner (vectorized rollouts) — `2026-01-25T15:40:00`
+- [x] Step 7.1: PickPlaceRunner (vectorized rollouts) — `2026-01-25T15:40:00`
 - [ ] Step 7.2: End-to-end eval test — `2026-01-26T11:20:00`
 
 ### Stage 8: Integration
