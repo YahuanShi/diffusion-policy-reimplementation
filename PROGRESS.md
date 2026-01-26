@@ -36,7 +36,7 @@ Range: 2026-01-04 ~ 2026-01-28 (leave first/last 3 days blank)
 
 ### Stage 7: Evaluation
 - [x] Step 7.1: PickPlaceRunner (vectorized rollouts) — `2026-01-25T15:40:00`
-- [ ] Step 7.2: End-to-end eval test — `2026-01-26T11:20:00`
+- [x] Step 7.2: End-to-end eval test — `2026-01-26T11:20:00`
 
 ### Stage 8: Integration
 - [ ] Step 8.1: Wire train.py + eval.py — `2026-01-27T13:00:00`
