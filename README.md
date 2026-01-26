@@ -12,7 +12,8 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
 - [ ] **Checkpoints** — Release trained checkpoints with download link
-- [ ] **Real environment evaluation** — `eval.py` currently only supports `--mock` mode with random observations. A proper evaluation requires a gym-compatible simulated environment (e.g., PushT, RoboSuite) or real robot rollout.
+- [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
+- [ ] **Real-robot success rate** — run N trials with `inference.py` and report success / N (offline action error is a regression check, not a success metric)
 
 ---
 
@@ -27,11 +28,9 @@ This is a **from-scratch reimplementation** of Diffusion Policy, not a fork. Eve
 | **Code origin** | Complete framework (~20k LOC) | From-scratch rewrite (~2k LOC) |
 | **Config system** | Hydra + YAML (dozens of config files) | Plain argparse (one `train.py`) |
 | **Data format** | Zarr only | LeRobot v3 (modern standard) |
-| **Wandb** | Deeply coupled, required | Always enabled (project: `Diffusion-Policy`) |
 | **State normalization** | Action only | Action + state (inspired by OpenPI) |
 | **Comments** | Minimal | Learning-note style: explains the *why* behind each design |
 | **Environment** | conda + pip + manual setup | `bash setup.sh` one-click (uv) |
-| **Scope** | PushT, RoboMimic, multiple backbones | Pick-and-Place with 1D U-Net (focused) |
 
 ---
 
@@ -105,7 +104,7 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 ├── diffusion_policy/
 │   ├── model/
 │   │   ├── diffusion/
-│   │   │   ├── scheduler.py        # DDPM forward/reverse process (cosine schedule)
+│   │   │   ├── scheduler.py        # DDPM / DDIM schedulers (cosine schedule)
 │   │   │   ├── unet1d.py           # Conditional 1D U-Net with FiLM conditioning
 │   │   │   └── ema.py              # Exponential Moving Average for stable inference
 │   │   └── vision/
@@ -113,25 +112,29 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   ├── dataset/
 │   │   ├── normalizer.py           # Linear normalizer (limits/gaussian modes)
 │   │   └── lerobot_wrapper.py      # LeRobot dataset wrapper for image policy
-│   └── policy/
-│       └── image.py                # Image-conditioned diffusion policy
+│   ├── policy/
+│   │   ├── image.py                # Image-conditioned diffusion policy
+│   │   └── loader.py               # Build policy from config, load checkpoints (EMA-aware)
+│   └── control.py                  # Real-robot scheduling: latency-aware chunk execution, gripper hysteresis
 ├── training/
-│   └── workspace.py                # Training workspace (LeRobot pipeline)
+│   └── workspace.py                # Training loop (LeRobot pipeline, EMA, val split, checkpoints)
 ├── evaluation/
-│   └── runner.py                   # Evaluation runner with action chunking loop
-├── tests/
-│   └── test_integration.py         # End-to-end pipeline smoke test
+│   ├── offline.py                  # Predicted vs recorded action error on held-out episodes
+│   └── runner.py                   # Rollout runner with action chunking loop (mock env)
+├── tests/                          # pytest: scheduler, normalizer, EMA, checkpoints, control, integration
 ├── scripts/
-│   └── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
+│   ├── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
+│   ├── visualize_dataset.py        # Inspect episodes in a LeRobot dataset
+│   └── benchmark_inference.py      # DDPM vs DDIM inference latency benchmark
 ├── experiments/                     # Validation scripts
 │   ├── 01_ddpm_toy.py              # DDPM on toy 1D data
 │   ├── 02_encoder_test.py          # Vision encoder unit test
 │   └── 03_image_policy_test.py     # Image policy integration test
 ├── train.py                        # Training entry point
 ├── inference.py                    # Real robot inference (UR3e + dual camera)
-├── eval.py                         # Evaluation entry point (mock env)
+├── eval.py                         # Evaluation entry point (offline / mock)
 ├── setup.sh                        # One-click environment setup (uv + DP venv)
-└── pyproject.toml                  # Dependencies and project metadata
+└── pyproject.toml                  # Dependencies, ruff config, project metadata
 ```
 
 ---
@@ -153,29 +156,54 @@ Requires Python 3.10+ and a CUDA-capable GPU for training.
 ## 5. Usage
 
 ### Training
+
+Standard format: **480×480** images, no resize, batch 64. Dataset images and inference camera frames must both be center-cropped to 480×480 square before conversion.
+
 ```bash
 python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
-    --epochs 3000 --batch 8 \
-    --resize 96 96 --crop 76 76 \
+    --max_steps 30000 --batch 64 \
+    --val_ratio 0.05 \
     --device cuda --output_dir outputs/my_run \
-    --save_every_steps 5000 --checkpoint_every 100 --max_keep_checkpoints 5 \
+    --save_every_steps 5000 --max_keep_checkpoints 5 \
     --wandb_run_name my_run
 ```
 
-- `--resize H W` — resize images to H×W before the encoder (saves GPU memory)
-- `--crop H W` — random crop to H×W during training, center crop at eval (data augmentation)
+- `--max_steps 30000` — total gradient steps; the cosine LR schedule spans exactly this many steps
+- `--val_ratio 0.05` — hold out 5% of episodes (split by episode); every `--val_every_steps` (default 2000) the EMA model is scored on them (`val/loss`, `val/action_mse`, `val/action_mae`). Default 0 = train on all episodes
 - `--save_every_steps 5000` — save a step checkpoint every 5000 gradient steps; keep only the latest `--max_keep_checkpoints` (default: 3) to save disk space
-- `--checkpoint_every 100` — additionally save an epoch checkpoint every 100 epochs
 
-Wandb logging is always enabled (project: `Diffusion-Policy`). Checkpoints and `config.json` are saved to `output_dir`.
+`config.json` is written to `output_dir`, and the same config is stored **inside every checkpoint** — `eval.py` / `inference.py` rebuild the architecture from it, so non-default `--horizon`, `--crop`, etc. need no extra flags at load time.
+
+Checkpoint files:
+- `checkpoint_step*.pt` — raw training weights + EMA weights + optimizer state (for resuming; inference automatically uses the EMA weights)
+- `policy_final.pt` — EMA weights only (for deployment)
 
 ### Resume Training
 ```bash
 python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
-    --resume outputs/my_run/checkpoint_epoch500.pt \
-    --epochs 3000 --device cuda
+    --resume outputs/my_run/checkpoint_step20000.pt \
+    --max_steps 30000 --val_ratio 0.05 --device cuda --output_dir outputs/my_run
+```
+
+Resuming continues the same wandb run. Pass the same `--val_ratio` / `--seed` as the original run so the train/val split is identical.
+
+### Evaluation
+
+Offline (default): compares the executed action chunk `action[To-1 : To-1+Ta]` with the recorded demonstration. Uses the val episodes stored in the checkpoint unless `--episodes` is given.
+
+```bash
+python eval.py --checkpoint outputs/my_run/policy_final.pt --device cuda
+python eval.py --checkpoint outputs/my_run/policy_final.pt --device cuda --episodes 3 17 42 \
+    --output_json outputs/my_run/eval.json
+```
+
+Reported: denoising loss, action MSE, action MAE (overall and per dim, in raw units — degrees for UR3e joints). Low action error does not guarantee task success (multimodal demos), so use it to compare checkpoints, not as a success rate.
+
+Mock rollout (pipeline smoke test only, reward is meaningless):
+```bash
+python eval.py --checkpoint outputs/my_run/policy_final.pt --mock
 ```
 
 ### Real Robot Inference (UR3e)
@@ -190,25 +218,19 @@ pip install ur-rtde pyrealsense2 pyserial opencv-python
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 --dry_run
 
-# Real deployment
+# Real deployment (frequency=20 matches training fps=20)
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 \
-    --frequency 10 --steps_per_inference 6 --num_inference_steps 16 \
+    --steps_per_inference 6 --num_inference_steps 16 \
     --max_steps 500
-
-# Without gripper / custom camera serials
-python inference.py --checkpoint outputs/policy_final.pt \
-    --robot_ip 10.0.0.1 --no_gripper \
-    --cam_exterior 105422061000 --cam_wrist 352122273671
 ```
 
-- `--steps_per_inference` — actions to execute per inference cycle (default: 6)
+- `--steps_per_inference` — actions executed per inference cycle (default: 6 of the 8 predicted)
 - `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
+- `--max_joint_vel` — per-joint velocity clamp in rad/s (default: 1.0)
+- `--no_gripper`, `--cam_exterior`, `--cam_wrist` — run without gripper / custom camera serials
 
-### Evaluation (Mock)
-```bash
-python eval.py --checkpoint outputs/policy_final.pt --device cuda --mock
-```
+Latency compensation: action slots that elapsed during inference are skipped, and execution always stops at the cycle boundary so delays never accumulate across cycles. If inference takes longer than a whole cycle, a warning is logged and the schedule is re-anchored.
 
 ### Data Conversion (HDF5 → LeRobot)
 ```bash
