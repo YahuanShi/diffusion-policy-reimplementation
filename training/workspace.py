@@ -11,6 +11,7 @@ Training loop:
       1. Forward: policy.compute_loss(batch) → MSE(ε_θ, ε)  [DDPM forward process]
       2. Backward: loss.backward() + gradient clipping (max_norm=1.0)
       3. Update: optimizer.step() + lr_scheduler.step() + ema.step()
+  LR schedule: linear warmup for lr_warmup_steps, then cosine decay to lr/10 at max_steps.
   Terminates after max_steps gradient steps. Checkpoints saved every save_every_steps steps;
   only the last max_keep_checkpoints are retained.
 
@@ -31,6 +32,7 @@ Usage:
 
 import glob
 import json
+import math
 import os
 import random
 import time
@@ -65,6 +67,23 @@ def split_episodes(repo_id, root, episodes, val_ratio, seed):
     return train, val
 
 
+def make_lr_lambda(warmup_steps, total_steps, min_ratio=0.1):
+    """
+    LR multiplier: linear warmup 0 → 1, then cosine 1 → min_ratio, flat afterwards.
+
+    Warmup matters because Adam's second-moment estimates are unreliable for the first
+    few hundred steps; full-size updates from a random init can destabilise training.
+    """
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+        return min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+
+    return lr_lambda
+
+
 def _step_checkpoint_sort_key(path):
     # Numeric sort: lexicographic order would put step10000 before step5000
     return int(os.path.basename(path)[len("checkpoint_step") : -len(".pt")])
@@ -82,6 +101,7 @@ def train_image(
     n_action_steps=8,
     num_inference_steps=100,
     lr=1e-4,
+    lr_warmup_steps=500,
     ema_power=2 / 3,
     save_every_steps=5000,
     max_keep_checkpoints=3,
@@ -147,8 +167,10 @@ def train_image(
         "num_inference_steps": num_inference_steps,
         "num_train_timesteps": num_train_timesteps,
         "lr": lr,
+        "lr_warmup_steps": lr_warmup_steps,
         "ema_power": ema_power,
         "save_every_steps": save_every_steps,
+        "fps": dataset.fps,
         "image_keys": dataset.image_keys,
         "state_key": state_key,
         "use_group_norm": use_group_norm,
@@ -213,8 +235,8 @@ def train_image(
     ema = EMAModel(policy, power=ema_power)
 
     optimizer = torch.optim.AdamW(policy.parameters(), lr=lr, weight_decay=1e-6)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max_steps, eta_min=lr / 10
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, make_lr_lambda(lr_warmup_steps, max_steps)
     )
 
     n_params = sum(p.numel() for p in policy.parameters())
@@ -231,8 +253,8 @@ def train_image(
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt["epoch"] + 1
         global_step = ckpt["global_step"]
-        # Replay the schedule instead of loading its state: the saved state carries the
-        # old T_max, which would be wrong if --max_steps changed between runs.
+        # Replay the schedule instead of loading its state: the schedule is a function
+        # of max_steps, which may have changed between runs.
         for _ in range(global_step):
             lr_scheduler.step()
         wandb_run_id = ckpt.get("wandb_run_id")
@@ -260,6 +282,7 @@ def train_image(
             "n_obs_steps": n_obs_steps,
             "n_action_steps": n_action_steps,
             "lr": lr,
+            "lr_warmup_steps": lr_warmup_steps,
             "down_dims": list(down_dims),
             "resize_shape": resize_shape,
             "crop_shape": crop_shape,

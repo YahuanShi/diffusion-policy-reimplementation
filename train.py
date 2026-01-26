@@ -50,6 +50,12 @@ def main():
     parser.add_argument("--n_obs_steps", type=int, default=2)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr_warmup_steps",
+        type=int,
+        default=500,
+        help="Linear LR warmup steps before cosine decay (default: 500)",
+    )
     parser.add_argument("--output_dir", default="outputs")
     parser.add_argument(
         "--save_every_steps",
@@ -107,6 +113,7 @@ def main():
         state_key=args.state_key,
         image_keys=args.image_keys,
         lr=args.lr,
+        lr_warmup_steps=args.lr_warmup_steps,
         output_dir=args.output_dir,
         save_every_steps=args.save_every_steps,
         max_keep_checkpoints=args.max_keep_checkpoints,

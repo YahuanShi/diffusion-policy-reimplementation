@@ -88,6 +88,7 @@ class LeRobotImageDataset(Dataset):
             delta_timestamps=dt,
         )
 
+        self.fps = fps
         self.horizon = horizon
         self.n_obs_steps = n_obs_steps
         self.image_keys = image_keys
