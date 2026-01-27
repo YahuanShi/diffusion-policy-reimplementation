@@ -4,10 +4,11 @@ Unit tests for the real-robot scheduling helpers (diffusion_policy/control.py).
 Validates:
   - plan_execution never runs past the cycle boundary, whatever the latency
   - latency is converted into skipped slots
-  - GripperHysteresis ignores values between the thresholds and respects the dwell time
+  - GripperHysteresis follows the dataset convention (1 = open), ignores values between
+    the thresholds and respects the dwell time
 """
 
-from diffusion_policy.control import GripperHysteresis, plan_execution
+from diffusion_policy.control import GripperHysteresis, TimingStats, plan_execution
 
 DT = 0.05  # 20 Hz
 
@@ -35,23 +36,40 @@ def test_plan_execution_clamps_to_predicted_chunk():
 
 
 def test_gripper_hysteresis_band_does_not_toggle():
-    g = GripperHysteresis(close_thresh=0.65, open_thresh=0.35, min_dwell_steps=1)
-    for v in [0.5, 0.6, 0.4, 0.64]:
+    g = GripperHysteresis(close_thresh=0.35, open_thresh=0.65, min_dwell_steps=1)
+    for v in [0.5, 0.4, 0.6, 0.36]:
         assert g.update(v) is True  # stays open inside the band
 
 
+def test_gripper_hysteresis_uses_dataset_convention():
+    # Training data: 1 = open, 0 = closed. A policy output of ~1 must keep it open.
+    g = GripperHysteresis(min_dwell_steps=1)
+    assert all(g.update(1.0) for _ in range(10))
+    assert g.update(0.0) is False
+
+
 def test_gripper_hysteresis_switch_and_dwell():
-    g = GripperHysteresis(close_thresh=0.65, open_thresh=0.35, min_dwell_steps=3)
-    states = [g.update(v) for v in [0.9, 0.9, 0.9]]
+    g = GripperHysteresis(close_thresh=0.35, open_thresh=0.65, min_dwell_steps=3)
+    states = [g.update(v) for v in [0.1, 0.1, 0.1]]
     assert states == [True, True, False]  # closes once dwell is satisfied
     # Immediately asking to open is ignored until the dwell has passed again
-    states = [g.update(0.0) for _ in range(3)]
+    states = [g.update(1.0) for _ in range(3)]
     assert states == [False, False, True]
 
 
 def test_gripper_hysteresis_reset():
     g = GripperHysteresis(min_dwell_steps=1)
-    g.update(1.0)
+    g.update(0.0)
     assert g.is_open is False
     g.reset()
     assert g.is_open is True
+
+
+def test_timing_stats_summary():
+    stats = TimingStats()
+    for v in range(1, 101):  # 1..100 ms
+        stats.add("obs", v)
+    s = stats.summary()["obs"]
+    assert s["n"] == 100 and s["max"] == 100
+    assert s["mean"] == 50.5
+    assert 94 <= s["p95"] <= 96
