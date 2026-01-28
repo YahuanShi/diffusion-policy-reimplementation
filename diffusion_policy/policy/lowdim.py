@@ -26,8 +26,9 @@ class DiffusionUnetLowdimPolicy(nn.Module):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
     def conditional_sample(self, shape, global_cond):
+        device = global_cond.device
         scheduler = self.noise_scheduler
-        trajectory = torch.randn(size=shape)
+        trajectory = torch.randn(size=shape, device=device)
 
         scheduler.set_timesteps(self.num_inference_steps)
         for t in scheduler.timesteps:

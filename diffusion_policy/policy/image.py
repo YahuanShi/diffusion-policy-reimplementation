@@ -59,8 +59,9 @@ class DiffusionUnetImagePolicy(nn.Module):
         return features.reshape(B, -1)
 
     def conditional_sample(self, shape, global_cond):
+        device = global_cond.device
         scheduler = self.noise_scheduler
-        trajectory = torch.randn(size=shape)
+        trajectory = torch.randn(size=shape, device=device)
 
         scheduler.set_timesteps(self.num_inference_steps)
         for t in scheduler.timesteps:

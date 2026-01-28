@@ -35,10 +35,14 @@ class SingleFieldNormalizer:
         return self
 
     def normalize(self, x):
-        return x * self.scale + self.offset
+        scale = self.scale.to(x.device)
+        offset = self.offset.to(x.device)
+        return x * scale + offset
 
     def unnormalize(self, x):
-        return (x - self.offset) / self.scale
+        scale = self.scale.to(x.device)
+        offset = self.offset.to(x.device)
+        return (x - offset) / scale
 
     def state_dict(self):
         return {'scale': self.scale, 'offset': self.offset}
