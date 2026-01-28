@@ -1,3 +1,21 @@
+"""
+Data normalizer — maps state/action to a uniform range for easier network learning.
+
+Two modes:
+  limits (default): linear map to [-1, 1]
+    scale = 2 / (max - min),  offset = -1 - scale * min
+  gaussian: standardize to mean=0, std=1
+    scale = 1/std,  offset = -mean/std
+
+normalize / unnormalize:
+  normalize:   y = x * scale + offset
+  unnormalize: x = (y - offset) / scale
+
+Critical for Diffusion Policy:
+  - DDPM's clip operation assumes data in [-1, 1]
+  - State normalization unifies dimensions with different units (e.g. joint angles in rad vs position in m)
+"""
+
 import torch
 
 
