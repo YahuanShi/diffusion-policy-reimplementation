@@ -1,3 +1,18 @@
+"""
+Sequence sampler — extracts fixed-length windows from episode data for training.
+
+The sampler slides a window of `sequence_length` steps across each episode.
+Padding (pad_before, pad_after) allows the window to extend beyond episode boundaries,
+using edge-value replication (first/last frame repeated).
+
+Why padding matters for Diffusion Policy:
+  - pad_before = n_obs_steps - 1: ensures every timestep has enough observation history
+  - pad_after = n_action_steps - 1: ensures every timestep has a full action prediction horizon
+  - Without padding, the first/last few frames of each episode would be unusable
+
+Each window yields a dict of {key: (sequence_length, *data_shape)} arrays.
+"""
+
 import numpy as np
 from torch.utils.data import Dataset
 

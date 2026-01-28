@@ -1,9 +1,15 @@
 """
-Evaluation entry point — loads a checkpoint and runs rollouts.
+Evaluation entry point — loads a trained checkpoint and runs rollouts.
+
+Loads a lowdim policy checkpoint, reconstructs the model architecture from
+the saved normalizer dimensions, and evaluates over multiple episodes.
+
+The model architecture (U-Net dims, horizon, etc.) is hardcoded here to match
+the training config. In production, these should be saved in the checkpoint.
 
 Usage:
-    python eval.py --checkpoint outputs/policy_final.pt
-    python eval.py --checkpoint outputs/policy_final.pt --mock  # mock env test
+    python eval.py --checkpoint outputs/policy_final.pt --mock   # mock env
+    python eval.py --checkpoint outputs/policy_final.pt          # real env (needs robomimic)
 """
 
 import argparse

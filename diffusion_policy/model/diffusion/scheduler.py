@@ -1,72 +1,109 @@
-# DDPM forward and reverse process.
+"""
+DDPM (Denoising Diffusion Probabilistic Models) forward and reverse process.
+
+Core idea:
+  Training: add Gaussian noise to clean data x0 to get x_t, train network to predict the noise
+  Inference: start from pure noise x_T ~ N(0,I), iteratively denoise to recover x0
+
+Key formulas:
+  Forward (add noise):  x_t = sqrt(alpha_bar_t) * x0 + sqrt(1 - alpha_bar_t) * eps
+  Reverse (denoise):    x_{t-1} = mu_tilde(x_t, eps_theta) + sigma_t * z
+
+where alpha_bar_t = prod_{s=1}^{t} alpha_s,  alpha_t = 1 - beta_t
+
+Reference: Ho et al. 2020 "Denoising Diffusion Probabilistic Models"
+"""
 
 import torch
 from types import SimpleNamespace
+
 
 class DDPMScheduler:
     def __init__(self, num_train_timesteps=100, beta_start=0.0001, beta_end=0.02, beta_schedule='squaredcos_cap_v2'):
         self.num_train_timesteps = num_train_timesteps
 
         if beta_schedule == 'linear':
-            # T evenly-spaced values from beta_start to beta_end
             self.betas = torch.linspace(beta_start, beta_end, num_train_timesteps).float()
 
         elif beta_schedule == 'squaredcos_cap_v2':
-            # Cosine schedule (Nichol & Dhariwal 2021) - more stable than linear
-            # Formula:  ᾱ_t = cos²( (t/T + s) / (1+s) · π/2 ) where s=0.008
-            # Then β_t = 1 - ᾱ_t / ᾱ_{t-1}, clipped to [0, 0.999]
+            # Cosine schedule (Nichol & Dhariwal 2021), more stable than linear.
+            # alpha_bar_t = cos^2((t/T + s)/(1+s) * pi/2), s=0.008 prevents alpha_bar_T = 0
+            # Then beta_t = 1 - alpha_bar_t / alpha_bar_{t-1}, clipped to [0, 0.999]
+            # Advantage: noise is added more uniformly across timesteps
             s = 0.008
             steps = num_train_timesteps + 1
             t = torch.linspace(0, num_train_timesteps, steps, dtype=torch.float64)
             alphas_cumprod = torch.cos((t / num_train_timesteps + s) / (1 + s) * torch.pi / 2) ** 2
-            alphas_cumprod = alphas_cumprod / alphas_cumprod[0] # normalize so ᾱ_0 = 1
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
             betas = 1 - alphas_cumprod[1:] / alphas_cumprod[:-1]
             self.betas = torch.clip(betas, 0, 0.999).float()
 
-        # Everything below is schedule-independent — computed from self.betas
-        # α_t = 1 - β_t
+        # ---- Everything below is derived from betas, schedule-independent ----
+
+        # alpha_t = 1 - beta_t
         self.alphas = 1.0 - self.betas
 
-        # ᾱ_t = cumulative product of α_1 ... α_t
+        # alpha_bar_t = alpha_1 * alpha_2 * ... * alpha_t  (cumulative product)
+        # Near 1 at t=0 (almost no noise), near 0 at t=T (pure noise)
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
 
-        # Precompute the two square root terms used in add_noise
+        # Two sqrt coefficients for forward process: x_t = sqrt(a) * x0 + sqrt(1-a) * eps
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
 
-        # ᾱ_{t-1} for posterior variance computation (ᾱ_{-1} = 1 by convention)
+        # alpha_bar_{t-1} for posterior variance (alpha_bar_{-1} = 1 by convention)
         self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), self.alphas_cumprod[:-1]])
-        # β̃_t = β_t · (1 - ᾱ_{t-1}) / (1 - ᾱ_t)  — "fixed small" posterior variance
+
+        # Posterior variance: beta_tilde_t = beta_t * (1 - alpha_bar_{t-1}) / (1 - alpha_bar_t)
+        # This is the "fixed small" variance from the DDPM paper
         self.posterior_variance = self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
         self.posterior_variance[0] = 0.0  # no noise at t=0
 
         self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
 
     def add_noise(self, x0, noise, timesteps):
-        sqrt_alpha_prod = self.sqrt_alphas_cumprod[timesteps].to(x0.device)
-        sqrt_one_minus_prod = self.sqrt_one_minus_alphas_cumprod[timesteps].to(x0.device)
+        """Forward process: x_t = sqrt(alpha_bar_t) * x0 + sqrt(1-alpha_bar_t) * eps"""
+        t_cpu = timesteps.cpu()
+        sqrt_alpha_prod = self.sqrt_alphas_cumprod[t_cpu].to(x0.device)
+        sqrt_one_minus_prod = self.sqrt_one_minus_alphas_cumprod[t_cpu].to(x0.device)
 
+        # Broadcast: timesteps is (B,), x0 is (B, H, D), need to unsqueeze
         while sqrt_alpha_prod.dim() < x0.dim():
             sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
             sqrt_one_minus_prod = sqrt_one_minus_prod.unsqueeze(-1)
 
         return sqrt_alpha_prod * x0 + sqrt_one_minus_prod * noise
-    
+
     def step(self, eps_pred, t, x_t, clip_sample=True, clip_range=1.0):
+        """
+        One reverse (denoising) step: compute x_{t-1} from x_t and predicted noise.
+
+        Uses "predict x0 then clip" strategy (key design in Diffusion Policy):
+          1. Recover x0_hat = (x_t - sqrt(1-alpha_bar_t) * eps_pred) / sqrt(alpha_bar_t)
+          2. Clip x0_hat to [-1, 1] (actions are normalized to this range)
+          3. Compute posterior mean mu_tilde from clipped x0_hat and x_t
+          4. Add posterior variance noise to get x_{t-1}
+
+        Clipping is critical: prevents divergence during reverse process, especially early in training.
+        """
         device = x_t.device
         alpha_prod_t = self.alphas_cumprod[t].to(device)
         alpha_prod_t_prev = self.alphas_cumprod_prev[t].to(device)
         beta_prod_t = 1.0 - alpha_prod_t
 
+        # Step 1: recover x0_hat from eps_pred
         pred_x0 = (x_t - beta_prod_t.sqrt() * eps_pred) / alpha_prod_t.sqrt()
 
+        # Step 2: clip to normalized range
         if clip_sample:
             pred_x0 = pred_x0.clamp(-clip_range, clip_range)
 
+        # Step 3: posterior mean = coeff1 * x0_hat + coeff2 * x_t
         pred_x0_coeff = alpha_prod_t_prev.sqrt() * self.betas[t].to(device) / beta_prod_t
         current_sample_coeff = self.alphas[t].to(device).sqrt() * (1.0 - alpha_prod_t_prev) / beta_prod_t
         pred_prev_mean = pred_x0_coeff * pred_x0 + current_sample_coeff * x_t
 
+        # Step 4: add posterior variance noise (none at t=0)
         if t > 0:
             variance = self.posterior_variance[t].to(device).sqrt() * torch.randn_like(x_t)
         else:
@@ -76,8 +113,7 @@ class DDPMScheduler:
         return SimpleNamespace(prev_sample=prev_sample)
 
     def set_timesteps(self, num_inference_steps):
-        # Called before the inference loop to set how many denoising steps to run
-        # For DDPM: evenly spaced from T-1 down to 0
+        """Set inference timesteps. DDPM uses uniform spacing: T-1, T-2, ..., 0"""
         self.timesteps = torch.arange(num_inference_steps - 1, -1, -1)
 
 if __name__ == '__main__':

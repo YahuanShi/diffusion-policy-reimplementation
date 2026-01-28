@@ -1,3 +1,14 @@
+"""
+Low-dimensional observation diffusion policy — uses state vector only, no images.
+
+Differences from image policy:
+  - No obs_encoder (ResNet); obs is directly flattened as global_cond
+  - global_cond_dim = obs_dim * n_obs_steps (e.g. 10*2 = 20-dim)
+  - Everything else is identical: DDPM add/remove noise, MSE loss, predict-x0-then-clip
+
+Use case: low-dim simulation tasks like PushT, or robot control without camera input
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,7 +57,8 @@ class DiffusionUnetLowdimPolicy(nn.Module):
 
         noise = torch.randn_like(naction)
         timesteps = torch.randint(
-            0, self.noise_scheduler.num_train_timesteps, (B,)).long()
+            0, self.noise_scheduler.num_train_timesteps, (B,),
+            device=naction.device).long()
 
         noisy_action = self.noise_scheduler.add_noise(naction, noise, timesteps)
         eps_pred = self.model(noisy_action, timesteps, global_cond=global_cond)

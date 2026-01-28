@@ -1,3 +1,17 @@
+"""
+Evaluation runner — rollout a trained policy in an environment and collect metrics.
+
+Execution loop (mirrors real robot deployment):
+  1. Maintain an observation deque of the last n_obs_steps frames
+  2. Stack observations → policy.predict_action() → get n_action_steps actions
+  3. Execute actions one by one in the environment, collecting rewards
+  4. Repeat until done or max_steps reached
+
+The action chunking pattern (predict n_action_steps, execute all, then re-plan)
+is a key Diffusion Policy design: it provides temporal consistency and reduces
+the compounding error of single-step prediction.
+"""
+
 from collections import deque
 import numpy as np
 import torch

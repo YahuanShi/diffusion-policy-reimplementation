@@ -1,8 +1,28 @@
+# Data & outputs
 data/
+outputs/
+wandb/
+
+# Environment
+DP/
 .venv/
+.python-version
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-wandb/
-checkpoints/outputs/
+*.egg-info/
+
+# Logs
+*.log
+
+# Experiments artifacts
 *.png
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

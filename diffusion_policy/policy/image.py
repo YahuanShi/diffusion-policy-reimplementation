@@ -1,3 +1,21 @@
+"""
+Image-conditioned Diffusion Policy — the core implementation for image observations.
+
+Training:
+  1. Image observations → ResNet encoding → flattened obs_features
+  2. Action sequence normalized → add noise → U-Net predicts noise → MSE loss
+
+Inference:
+  1. Encode current observations → obs_features (global conditioning)
+  2. Start from pure noise x_T, DDPM reverse denoising → normalized action sequence
+  3. Unnormalize → extract action[To:To+n_action_steps] as executed actions
+
+Key design — obs_as_global_cond (observation as global conditioning):
+  - Obs features are NOT concatenated to U-Net input; instead injected via FiLM into every ResBlock
+  - U-Net only processes the action sequence, no need to handle obs-action alignment
+  - This is the core difference between Diffusion Policy and DDPM Image Generation
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,6 +41,8 @@ class DiffusionUnetImagePolicy(nn.Module):
         action_dim = shape_meta['action']['shape'][0]
         obs_feature_dim = obs_encoder.output_shape()[0]
 
+        # global_cond_dim = obs_feature_dim × n_obs_steps
+        # e.g. ResNet18 outputs 512-dim, n_obs_steps=2 → global_cond = 1024-dim
         model = ConditionalUnet1D(
             input_dim=action_dim,
             global_cond_dim=obs_feature_dim * n_obs_steps,
@@ -48,12 +68,30 @@ class DiffusionUnetImagePolicy(nn.Module):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
     def _encode_obs(self, obs_dict, n_steps):
+        """
+        Encode observations into a global conditioning vector.
+
+        Input: each value in obs_dict has shape (B, T, ...)
+        Steps:
+          1. Slice first n_steps: (B, T, ...) → (B, n_steps, ...)
+          2. Normalize low_dim data (images are NOT normalized here — ResNet handles that)
+          3. Flatten time dim: (B, n_steps, ...) → (B*n_steps, ...)
+          4. Pass through MultiImageObsEncoder → (B*n_steps, feat_dim)
+          5. Reshape → (B, n_steps * feat_dim) as global_cond
+        """
         B = None
         flat_obs = {}
+        low_dim_keys = set(
+            k for k, v in self.obs_encoder.shape_meta['obs'].items()
+            if v.get('type') == 'low_dim')
+
         for key, val in obs_dict.items():
             if B is None:
                 B = val.shape[0]
-            flat_obs[key] = val[:, :n_steps].reshape(-1, *val.shape[2:])
+            sliced = val[:, :n_steps]
+            if key in low_dim_keys and key in self.normalizer:
+                sliced = self.normalizer[key].normalize(sliced)
+            flat_obs[key] = sliced.reshape(-1, *sliced.shape[2:])
 
         features = self.obs_encoder(flat_obs)
         return features.reshape(B, -1)
@@ -71,6 +109,17 @@ class DiffusionUnetImagePolicy(nn.Module):
         return trajectory
 
     def compute_loss(self, batch):
+        """
+        Training loss computation.
+
+        Steps:
+          1. Normalize actions to [-1, 1]
+          2. Encode observations into global_cond
+          3. Sample random timestep and noise
+          4. Add noise: x_t = sqrt(alpha_bar_t) * action + sqrt(1-alpha_bar_t) * eps
+          5. U-Net predicts noise: eps_theta = model(x_t, t, global_cond)
+          6. Loss: MSE(eps_theta, eps)
+        """
         naction = self.normalizer['action'].normalize(batch['action'])
         B = naction.shape[0]
 
@@ -79,7 +128,8 @@ class DiffusionUnetImagePolicy(nn.Module):
 
         noise = torch.randn_like(naction)
         timesteps = torch.randint(
-            0, self.noise_scheduler.num_train_timesteps, (B,)).long()
+            0, self.noise_scheduler.num_train_timesteps, (B,),
+            device=naction.device).long()
 
         noisy_action = self.noise_scheduler.add_noise(naction, noise, timesteps)
         eps_pred = self.model(noisy_action, timesteps, global_cond=global_cond)
@@ -89,6 +139,20 @@ class DiffusionUnetImagePolicy(nn.Module):
 
     @torch.no_grad()
     def predict_action(self, obs_dict):
+        """
+        Inference: generate action sequence from noise.
+
+        Steps:
+          1. Encode observations
+          2. DDPM reverse denoising: x_T → x_{T-1} → ... → x_0
+          3. Unnormalize to get real actions
+          4. Extract action[To:To+n_action_steps] — skip timesteps corresponding to observations
+
+        Timeline (horizon=16, To=2, n_action_steps=8):
+          [obs obs | act act act act act act act act | unused unused unused unused unused unused]
+           0   1     2   3   4   5   6   7   8   9    10  11  12  13  14  15
+                     ^^^ start=To        end=To+8 ^^^
+        """
         B = next(iter(obs_dict.values())).shape[0]
         To = self.n_obs_steps
 

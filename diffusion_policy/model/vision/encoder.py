@@ -1,3 +1,17 @@
+"""
+Multi-image observation encoder — encodes images + low-dim observations into a fixed-dim feature vector.
+
+Architecture:
+  Each RGB image -> ResNet18 (fc removed) -> 512-dim feature
+  Low-dim data (state) -> concatenated directly
+  All features concatenated -> obs_feature_dim
+
+Key design choices:
+  - GroupNorm replaces BatchNorm: robot data has small batches (4~64), BN statistics are unstable
+  - share_rgb_model: multiple cameras share one ResNet backbone (saves params, may reduce accuracy)
+  - No ImageNet pretrained weights: robot images differ too much from ImageNet, training from scratch is better
+"""
+
 import copy
 import torch
 import torch.nn as nn
@@ -12,6 +26,7 @@ def get_resnet(name='resnet18', weights=None):
 
 
 def replace_submodules(root_module, predicate, func):
+    """递归替换模块中满足 predicate 的子模块。用于 BatchNorm → GroupNorm 替换。"""
     if predicate(root_module):
         return func(root_module)
     bn_list = [k.split('.') for k, m

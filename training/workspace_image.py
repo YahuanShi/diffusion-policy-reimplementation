@@ -1,8 +1,17 @@
 """
-Lowdim policy training workspace — trains low-dim diffusion policy using zarr format data.
+Image policy training workspace — trains image-conditioned diffusion policy using LeRobot format.
 
-Data pipeline: zarr → ReplayBuffer → SequenceSampler → DataLoader
-(Legacy pipeline; the new image policy uses LeRobot format, see workspace_image.py)
+Training loop:
+  Each epoch:
+    for batch in dataloader:
+      1. Forward: policy.compute_loss(batch) → MSE(eps_theta, eps)
+      2. Backward: loss.backward() + gradient clipping (max_norm=1.0)
+      3. Update: optimizer.step() + lr_scheduler.step() + ema.step()
+    Periodically save checkpoints
+
+Usage:
+  python train.py --repo_id lerobot/pusht --epochs 3000
+  python train.py --repo_id local/my_data --root ./data --device cuda
 """
 
 import os
@@ -11,68 +20,64 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
-from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
 from diffusion_policy.model.diffusion.ema import EMAModel
-from diffusion_policy.dataset.replay_buffer import ReplayBuffer
-from diffusion_policy.dataset.sampler import SequenceSampler
-from diffusion_policy.dataset.normalizer import LinearNormalizer
-from diffusion_policy.policy.lowdim import DiffusionUnetLowdimPolicy
+from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
+from diffusion_policy.dataset.lerobot_wrapper import LeRobotImageDataset
+from diffusion_policy.policy.image import DiffusionUnetImagePolicy
 
 
-def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
-          horizon=16, n_obs_steps=2, n_action_steps=8,
-          obs_key='state', action_key='action',
-          lr=1e-4, lr_warmup_steps=500,
-          ema_power=2/3, checkpoint_every=100,
-          output_dir='outputs',
-          use_wandb=True,
-          wandb_run_name=None):
+def train_image(repo_id, root=None, episodes=None,
+                device='cuda', batch_size=64, num_epochs=3000,
+                horizon=16, n_obs_steps=2, n_action_steps=8,
+                num_inference_steps=100,
+                lr=1e-4, lr_warmup_steps=500,
+                ema_power=2/3, checkpoint_every=100,
+                output_dir='outputs',
+                image_keys=None, state_key='observation.state',
+                use_group_norm=True, share_rgb_model=False,
+                down_dims=(256, 512, 1024),
+                diffusion_step_embed_dim=256,
+                video_backend='pyav',
+                num_workers=2,
+                resize_shape=None,
+                use_wandb=True,
+                wandb_run_name=None):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    buf = ReplayBuffer(zarr_path)
-    obs_dim = buf[obs_key].shape[-1]
-    action_dim = buf[action_key].shape[-1]
-    print(f"Dataset: {buf.n_episodes} episodes, obs_dim={obs_dim}, action_dim={action_dim}")
+    dataset = LeRobotImageDataset(
+        repo_id=repo_id, root=root, episodes=episodes,
+        horizon=horizon, n_obs_steps=n_obs_steps,
+        image_keys=image_keys, state_key=state_key,
+        video_backend=video_backend,
+    )
+    shape_meta = dataset.shape_meta
+    print(f"Dataset: {dataset.ds.num_episodes} episodes, {len(dataset)} frames")
+    print(f"Shape meta: {shape_meta}")
 
-    sampler = SequenceSampler(
-        buf, sequence_length=horizon,
-        pad_before=n_obs_steps - 1,
-        pad_after=n_action_steps - 1,
-        keys=[obs_key, action_key])
-    def collate_fn(batch):
-        result = {}
-        for key in batch[0]:
-            arrays = [b[key] for b in batch]
-            result[key] = torch.tensor(np.stack(arrays), dtype=torch.float32)
-        return result
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                            num_workers=num_workers, pin_memory=True,
+                            persistent_workers=(num_workers > 0))
+    print(f"Dataloader: {len(dataset)} samples, {len(dataloader)} batches/epoch")
 
-    dataloader = DataLoader(sampler, batch_size=batch_size, shuffle=True,
-                            num_workers=0, collate_fn=collate_fn)
-    print(f"Dataloader: {len(sampler)} windows, {len(dataloader)} batches/epoch")
+    normalizer = dataset.get_normalizer()
 
-    normalizer = LinearNormalizer()
-    normalizer.fit({
-        'obs': torch.tensor(buf[obs_key][:], dtype=torch.float32),
-        'action': torch.tensor(buf[action_key][:], dtype=torch.float32),
-    })
-
-    model = ConditionalUnet1D(
-        input_dim=action_dim,
-        global_cond_dim=obs_dim * n_obs_steps,
-        down_dims=[256, 512, 1024],
-        diffusion_step_embed_dim=256,
+    encoder = MultiImageObsEncoder(
+        shape_meta, use_group_norm=use_group_norm,
+        share_rgb_model=share_rgb_model,
+        resize_shape=resize_shape,
     )
     scheduler = DDPMScheduler(num_train_timesteps=100)
-    policy = DiffusionUnetLowdimPolicy(
-        model=model,
+    policy = DiffusionUnetImagePolicy(
+        obs_encoder=encoder,
         noise_scheduler=scheduler,
+        shape_meta=shape_meta,
         horizon=horizon,
-        obs_dim=obs_dim,
-        action_dim=action_dim,
         n_obs_steps=n_obs_steps,
         n_action_steps=n_action_steps,
-        num_inference_steps=100,
+        num_inference_steps=num_inference_steps,
+        diffusion_step_embed_dim=diffusion_step_embed_dim,
+        down_dims=list(down_dims),
     )
     policy.set_normalizer(normalizer)
     policy.to(device)
@@ -94,18 +99,21 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
             project='Diffusion-Policy',
             name=wandb_run_name,
             config={
-                'mode': 'lowdim',
-                'zarr_path': zarr_path,
-                'num_episodes': buf.n_episodes,
+                'mode': 'image',
+                'repo_id': repo_id,
+                'num_episodes': dataset.ds.num_episodes,
+                'num_frames': len(dataset),
                 'batch_size': batch_size,
                 'num_epochs': num_epochs,
                 'horizon': horizon,
                 'n_obs_steps': n_obs_steps,
                 'n_action_steps': n_action_steps,
                 'lr': lr,
-                'obs_dim': obs_dim,
-                'action_dim': action_dim,
+                'down_dims': list(down_dims),
+                'resize_shape': resize_shape,
                 'n_params': n_params,
+                'obs_keys': list(shape_meta['obs'].keys()),
+                'action_dim': shape_meta['action']['shape'][0],
             },
         )
 
@@ -115,11 +123,8 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
         epoch_losses = []
 
         for batch in dataloader:
-            batch_dict = {
-                'obs': batch[obs_key].to(device),
-                'action': batch[action_key].to(device),
-            }
-            loss = policy.compute_loss(batch_dict)
+            batch_gpu = {k: v.to(device) for k, v in batch.items()}
+            loss = policy.compute_loss(batch_gpu)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
             optimizer.step()
@@ -156,17 +161,18 @@ def train(zarr_path, device='cuda', batch_size=64, num_epochs=3000,
                 'ema_state_dict': ema.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'normalizer_state_dict': normalizer.state_dict(),
+                'shape_meta': shape_meta,
             }
             path = os.path.join(output_dir, f'checkpoint_epoch{epoch+1}.pt')
             torch.save(ckpt, path)
             print(f"  saved {path}")
 
-    # Save final EMA weights
     ema.copy_to(policy)
     final_path = os.path.join(output_dir, 'policy_final.pt')
     torch.save({
         'policy_state_dict': policy.state_dict(),
         'normalizer_state_dict': normalizer.state_dict(),
+        'shape_meta': shape_meta,
     }, final_path)
     if use_wandb:
         wandb.finish()
