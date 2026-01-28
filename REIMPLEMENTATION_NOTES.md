@@ -228,7 +228,30 @@ The scheduler unit tests are especially important — the DDPM/DDIM math is subt
 
 ---
 
-## 7. What to Reuse for ACT
+## 7. Simulation as a Stand-In for the Robot
+
+When the real robot is unavailable, a simulator with *public demonstrations* lets the
+whole pipeline (data → training → closed-loop success rate) be validated end to end.
+Setup used here: robosuite Franka Panda + robomimic v1.5 demos (shared repo `../robot-sim`).
+
+- **Check dataset ↔ simulator compatibility first.** Replay the recorded actions open-loop
+  and count successes (Lift 200/200, Can 194/200 here). If that fails, nothing trained on
+  the data can be evaluated meaningfully.
+- **Pin versions deliberately.** robosuite 1.5.2 pins a dependency that forces numpy < 2
+  (LeRobot needs ≥ 2); newer MuJoCo breaks robosuite 1.5.1. The resolver error messages
+  name the conflict — read them instead of loosening pins blindly.
+- **Absolute actions need a consistent frame.** Read the controller's own goal pose to build
+  them, and use the orientation the controller tracks for the state (`eef_quat_site`, not
+  the legacy `eef_quat`, which is ~90° off). Test it: "hold the current pose" must not move.
+- **Use a continuous rotation representation** (6D) for absolute orientation targets;
+  axis-angle flips sign near π, which is exactly where a top-down gripper lives.
+- **Every simulator has its own gripper polarity** (robosuite: −1 = open). Convert once,
+  at the environment boundary, to the convention of the real data.
+- **Fixed evaluation seeds** make policies comparable: same initial placements for every run.
+- **`nohup python …` buffers stdout** — training looked stuck for 15 minutes while it was
+  logging fine to wandb. Use `PYTHONUNBUFFERED=1` or `print(..., flush=True)`.
+
+## 8. What to Reuse for ACT
 
 ACT shares several components with Diffusion Policy that can be reused directly:
 
@@ -259,7 +282,7 @@ ACT shares several components with Diffusion Policy that can be reused directly:
 
 ---
 
-## 8. Common Mistakes Checklist
+## 9. Common Mistakes Checklist
 
 Before claiming the reimplementation works, verify:
 

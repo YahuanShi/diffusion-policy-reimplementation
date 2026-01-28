@@ -123,6 +123,7 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 ├── evaluation/
 │   ├── offline.py                  # Predicted vs recorded action error on held-out episodes
 │   ├── runner.py                   # Rollout runner with action chunking loop (mock env)
+│   ├── sim_policy.py               # Adapter for the shared Franka simulation (../robot-sim)
 │   └── trial_recorder.py           # Save real-robot trials (videos, actions, outcome)
 ├── tests/                          # pytest: scheduler, normalizer, EMA, checkpoints, control, integration
 ├── scripts/
@@ -205,10 +206,41 @@ python eval.py --checkpoint outputs/my_run/policy_final.pt --device cuda --episo
 
 Reported: denoising loss, action MSE, action MAE (overall and per dim, in raw units — degrees for UR3e joints). Low action error does not guarantee task success (multimodal demos), so use it to compare checkpoints, not as a success rate.
 
+Simulation (closed loop, success rate): see [Simulation (Franka Panda)](#simulation-franka-panda).
+
 Mock rollout (pipeline smoke test only, reward is meaningless):
 ```bash
 python eval.py --checkpoint outputs/my_run/policy_final.pt --mock
 ```
+
+### Simulation (Franka Panda)
+
+While the real robot is unavailable, policies are trained and evaluated in the shared
+simulation repo [`../robot-sim`](../robot-sim) (robosuite Franka Panda + robomimic demos,
+converted to LeRobot v3). Evaluation uses fixed seeds, so every checkpoint is scored on
+the same initial object placements.
+
+```bash
+# one-time: install robot-sim into this environment and build a dataset there
+uv pip install --python DP/bin/python -e ../robot-sim
+(cd ../robot-sim && .venv/bin/python -m robot_sim.convert --task lift --root data/lerobot/lift_ph_abs_84)
+
+# train (84×84 images, random crop 76×76, absolute 10-dim actions)
+python train.py --repo_id local/robomimic_lift_ph_abs_84 --root ../robot-sim/data/lerobot/lift_ph_abs_84 \
+    --max_steps 20000 --batch 64 --crop 76 76 --output_dir outputs/sim_lift
+
+# closed-loop evaluation: 50 seeded episodes, videos of the first 5
+python eval.py --checkpoint outputs/sim_lift/checkpoint_step5000.pt --device cuda \
+    --sim lift --n_episodes 50 --video_dir outputs/sim_lift/videos
+```
+
+| Task | Steps | Success (seeds 100000–100019) |
+|---|---|---|
+| lift | 5k | 20/20 (95% CI 84–100%) |
+| can | — | training |
+
+`robot-sim` is not a declared dependency (CI has no `../robot-sim` checkout): the sim
+tests skip when it is not installed, and a later `uv sync` removes it again.
 
 ### Real Robot Inference (UR3e)
 

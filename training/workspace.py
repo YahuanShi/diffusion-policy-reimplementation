@@ -147,8 +147,11 @@ def train_image(
         video_backend=video_backend,
     )
     shape_meta = dataset.shape_meta
-    print(f"Dataset: {dataset.ds.num_episodes} train episodes, {len(dataset)} frames")
-    print(f"Shape meta: {shape_meta}")
+    print(
+        f"Dataset: {dataset.ds.num_episodes} train episodes, {len(dataset)} frames",
+        flush=True,
+    )
+    print(f"Shape meta: {shape_meta}", flush=True)
 
     # Everything needed to rebuild the model + data pipeline later. Saved to config.json
     # AND inside every checkpoint, so a .pt file is self-describing.
@@ -199,7 +202,10 @@ def train_image(
         pin_memory=True,
         persistent_workers=(num_workers > 0),
     )
-    print(f"Dataloader: {len(dataset)} samples, {len(dataloader)} batches/epoch")
+    print(
+        f"Dataloader: {len(dataset)} samples, {len(dataloader)} batches/epoch",
+        flush=True,
+    )
 
     val_dataloader = None
     if val_episodes:
@@ -223,7 +229,7 @@ def train_image(
             num_workers=min(num_workers, 4),
             pin_memory=True,
         )
-        print(f"Val: episodes {val_episodes}, {len(val_dataset)} frames")
+        print(f"Val: episodes {val_episodes}, {len(val_dataset)} frames", flush=True)
 
     # Fit on training episodes only — val stays truly unseen
     normalizer = dataset.get_normalizer()
@@ -240,7 +246,7 @@ def train_image(
     )
 
     n_params = sum(p.numel() for p in policy.parameters())
-    print(f"Model params: {n_params:,}")
+    print(f"Model params: {n_params:,}", flush=True)
 
     start_epoch = 0
     global_step = 0
@@ -259,11 +265,12 @@ def train_image(
             lr_scheduler.step()
         wandb_run_id = ckpt.get("wandb_run_id")
         print(
-            f"Resumed from {resume_checkpoint} (epoch {start_epoch}, step {global_step})"
+            f"Resumed from {resume_checkpoint} (epoch {start_epoch}, step {global_step})",
+            flush=True,
         )
 
     remaining = max_steps - global_step
-    print(f"Training for {max_steps} steps ({remaining} remaining)")
+    print(f"Training for {max_steps} steps ({remaining} remaining)", flush=True)
 
     # Passing the previous run id continues the same wandb run instead of starting a new one
     run = wandb.init(
@@ -308,7 +315,8 @@ def train_image(
         wandb.log(log, step=global_step)
         print(
             f"  val step {global_step}: loss={metrics['loss']:.4f} "
-            f"action_mse={metrics['action_mse']:.4f} action_mae={metrics['action_mae']:.4f}"
+            f"action_mse={metrics['action_mse']:.4f} action_mae={metrics['action_mae']:.4f}",
+            flush=True,
         )
 
     done = global_step >= max_steps
@@ -359,7 +367,7 @@ def train_image(
                 }
                 path = os.path.join(output_dir, f"checkpoint_step{global_step}.pt")
                 torch.save(ckpt, path)
-                print(f"  saved {path}")
+                print(f"  saved {path}", flush=True)
                 if max_keep_checkpoints > 0:
                     step_ckpts = sorted(
                         glob.glob(os.path.join(output_dir, "checkpoint_step*.pt")),
@@ -387,7 +395,8 @@ def train_image(
         wandb.log(epoch_log, step=global_step)
         lr_now = optimizer.param_groups[0]["lr"]
         print(
-            f"epoch {epoch:>5} step {global_step:>6}/{max_steps}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f} time={epoch_time:.1f}s"
+            f"epoch {epoch:>5} step {global_step:>6}/{max_steps}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f} time={epoch_time:.1f}s",
+            flush=True,
         )
 
         epoch += 1
@@ -410,5 +419,5 @@ def train_image(
     artifact.add_file(final_path)
     wandb.log_artifact(artifact)
     wandb.finish()
-    print(f"Training complete. Final model: {final_path}")
+    print(f"Training complete. Final model: {final_path}", flush=True)
     return policy
