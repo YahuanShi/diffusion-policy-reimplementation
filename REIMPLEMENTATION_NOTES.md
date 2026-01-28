@@ -164,6 +164,18 @@ Execute fewer than predicted so the policy can re-plan before the prediction hor
 
 Skipping the action slots that elapsed during inference is the right idea, but execution must still **end** at the cycle boundary (`actions[exec_start:steps_per_inference]`), not run `steps_per_inference` actions starting from `exec_start`. Otherwise every cycle overruns by `exec_start` slots → the next cycle starts late → skips more → overruns more, until only one action per cycle is executed. Keep this logic in a pure function (`plan_execution`) so it can be unit-tested without a robot.
 
+### Verify Conventions Against the Data, Not the Code
+
+Units and sign/polarity conventions are where real-robot deployments fail silently. This project shipped with the gripper channel inverted at inference (code assumed 1 = closed, data uses 1 = open) — the model would have closed the gripper right after start and opened it during the carry. Checks that take minutes:
+- Plot the gripper channel per episode: every pick-and-place demo starts and ends **open**, so the value at frame 0 *is* the "open" value.
+- Look at one camera frame before and one during the grasp next to the recorded value.
+- Compare action and state ranges with what the robot API returns (degrees vs radians).
+- Compare the robot's home pose with the first frame of the demonstrations.
+
+### Never Block the Control Loop on Sensors
+
+`wait_for_frames()` on two cameras plus a blocking serial read easily exceed a 50 ms period, and a serial `readline()` returns the *oldest* buffered line — a stale reading. Read each sensor in its own thread, cache only the latest value with a timestamp, and let `get_obs()` copy the cache. Log `get_obs` time, action lateness and sensor age every cycle, and check the effective control rate in a dry run.
+
 ### Warm-up
 
 Run 1–2 inference cycles before the robot moves to:
@@ -260,6 +272,7 @@ Before claiming the reimplementation works, verify:
 - [ ] `global_cond` dim = `obs_feature_dim * n_obs_steps`, not just `obs_feature_dim`
 - [ ] Checkpoint saves `shape_meta` alongside weights (needed to reconstruct architecture at load time)
 - [ ] `normalizer.state_dict()` is saved and loaded with the checkpoint
+- [ ] Gripper / binary channels use the same polarity at inference as in the data (check frame 0 of every episode)
 - [ ] Resumable checkpoints store raw weights in `policy_state_dict` and EMA separately; inference uses EMA
 - [ ] Training config is stored in the checkpoint and used to rebuild the model at load time
 - [ ] `ruff check` passes before every commit

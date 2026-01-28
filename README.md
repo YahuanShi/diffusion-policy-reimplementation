@@ -4,7 +4,7 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 ## Demo
 
-<!-- TODO: Add demo GIF/video here -->
+<!-- TODO: add demo GIF — python scripts/summarize_trials.py --gif trials/<trial> --out docs/demo.gif -->
 
 ---
 
@@ -13,7 +13,9 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
 - [ ] **Checkpoints** — Release trained checkpoints with download link
 - [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
-- [ ] **Real-robot success rate** — run N trials with `inference.py` and report success / N (offline action error is a regression check, not a success metric)
+- [ ] **Real-robot success rate** — run N trials with `inference.py --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
+
+Tooling for all three is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is training a model and running the trials on the robot.
 
 ---
 
@@ -25,7 +27,7 @@ This is a **from-scratch reimplementation** of Diffusion Policy, not a fork. Eve
 
 | Aspect | [Original (Chi et al.)](https://github.com/real-stanford/diffusion_policy) | This Project |
 |--------|----------------------------------------------------------------------------|--------------|
-| **Code origin** | Complete framework (~20k LOC) | From-scratch rewrite (~2k LOC) |
+| **Code origin** | Complete framework (~20k LOC) | From-scratch rewrite (~5k LOC incl. tests) |
 | **Config system** | Hydra + YAML (dozens of config files) | Plain argparse (one `train.py`) |
 | **Data format** | Zarr only | LeRobot v3 (modern standard) |
 | **State normalization** | Action only | Action + state (inspired by OpenPI) |
@@ -120,12 +122,14 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   └── workspace.py                # Training loop (LeRobot pipeline, EMA, val split, checkpoints)
 ├── evaluation/
 │   ├── offline.py                  # Predicted vs recorded action error on held-out episodes
-│   └── runner.py                   # Rollout runner with action chunking loop (mock env)
+│   ├── runner.py                   # Rollout runner with action chunking loop (mock env)
+│   └── trial_recorder.py           # Save real-robot trials (videos, actions, outcome)
 ├── tests/                          # pytest: scheduler, normalizer, EMA, checkpoints, control, integration
 ├── scripts/
 │   ├── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
 │   ├── visualize_dataset.py        # Inspect episodes in a LeRobot dataset
-│   └── benchmark_inference.py      # DDPM vs DDIM inference latency benchmark
+│   ├── benchmark_inference.py      # DDPM vs DDIM inference latency benchmark
+│   └── summarize_trials.py         # Success rate (with 95% CI) + demo GIF from recorded trials
 ├── experiments/                     # Validation scripts
 │   ├── 01_ddpm_toy.py              # DDPM on toy 1D data
 │   ├── 02_encoder_test.py          # Vision encoder unit test
@@ -228,10 +232,31 @@ python inference.py --checkpoint outputs/policy_final.pt \
 - `--frequency` — control rate in Hz; defaults to the dataset fps stored in the checkpoint and refuses a mismatch unless `--allow_fps_mismatch` is given
 - `--steps_per_inference` — actions executed per inference cycle (default: 6 of the 8 predicted)
 - `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
+- `--max_steps` — control steps per trial (default: 800 = 40 s; the longest demo is ~33 s)
 - `--max_joint_vel` — per-joint velocity clamp in rad/s (default: 1.0)
+- `--record_dir` — record the trial (see below)
 - `--no_gripper`, `--cam_exterior`, `--cam_wrist` — run without gripper / custom camera serials
 
 Latency compensation: action slots that elapsed during inference are skipped, and execution always stops at the cycle boundary so delays never accumulate across cycles. If inference takes longer than a whole cycle, a warning is logged and the schedule is re-anchored.
+
+Sensors are read by background threads (one per camera, one for the gripper's serial stream), so `get_obs()` only copies the latest cached readings and never blocks the control loop; it refuses data older than 0.5 s. Each cycle logs `infer`, `obs_max` (get_obs time), `late_max` (how late an action was sent) and `age_max` (sensor age), and the run ends with the effective control rate and a timing summary. **Check these in a `--dry_run` before the first real run**: `obs_max` should stay well below the 50 ms period and the effective rate should match the dataset fps.
+
+Gripper convention: the training data uses **1 = open, 0 = closed** (every demonstration starts and ends open). Both the gripper state fed to the policy and the gripper action channel follow it.
+
+### Recording Trials (Demo & Success Rate)
+
+```bash
+# Each run is saved to trials/trial_<timestamp>/ (exterior.mp4, wrist.mp4, steps.npz, meta.json);
+# at the end you are asked whether the trial succeeded
+python inference.py --checkpoint outputs/my_run/policy_final.pt --robot_ip 10.0.0.1 \
+    --record_dir trials/
+
+# Success rate per checkpoint with a 95% Wilson interval (dry runs and unanswered trials are skipped)
+python scripts/summarize_trials.py --record_dir trials/ --markdown trials/results.md
+
+# Side-by-side exterior | wrist demo GIF from one trial
+python scripts/summarize_trials.py --gif trials/trial_20260212_101500 --out demo.gif
+```
 
 ### Data Conversion (HDF5 → LeRobot)
 ```bash
@@ -240,6 +265,16 @@ python scripts/hdf5_to_lerobot.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
     --fps 20 --state_keys qpos
 ```
+
+---
+
+## Results
+
+<!-- Fill in from `python scripts/summarize_trials.py --record_dir trials/ --markdown trials/results.md` -->
+
+| Checkpoint | Success | Rate | 95% CI | Mean duration |
+|---|---|---|---|---|
+| — | — | — | — | — |
 
 ---
 
