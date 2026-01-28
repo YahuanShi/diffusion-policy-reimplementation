@@ -11,6 +11,9 @@ so this adapter keeps
 In simulation there is no wall clock — inference latency does not cost control steps,
 so all n_action_steps predicted actions are executed (no latency skipping).
 
+reset(seed) seeds torch with the episode's environment seed, so a rerun of the same
+checkpoint reproduces every episode exactly, and a single failing seed can be replayed.
+
 Observation keys: robot_sim emits LeRobot names ("observation.images.agentview"); the
 policy was trained on the same names after the dataset wrapper's dot → underscore
 renaming, so the mapping is just that renaming.
@@ -37,9 +40,13 @@ class DiffusionSimPolicy:
         self._obs = deque(maxlen=self.n_obs_steps)
         self._actions = deque()
 
-    def reset(self):
+    def reset(self, seed=None):
         self._obs.clear()
         self._actions.clear()
+        if seed is not None:
+            # Diffusion sampling starts from torch.randn noise; seeding per episode
+            # makes each episode reproducible on its own (same GPU / library versions)
+            torch.manual_seed(seed)
 
     def _to_policy_obs(self, obs):
         out = {}
