@@ -16,6 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+robot = [
+    "ur-rtde",
+    "opencv-python",
+    "pyrealsense2",
+    "pyserial",
+]
 dev = [
     "matplotlib",
     "pytest",

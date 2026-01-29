@@ -120,7 +120,8 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   ├── 02_encoder_test.py          # Vision encoder unit test
 │   └── 03_image_policy_test.py     # Image policy integration test
 ├── train.py                        # Training entry point
-├── eval.py                         # Evaluation entry point
+├── inference.py                    # Real robot inference (UR3e + dual camera)
+├── eval.py                         # Evaluation entry point (mock env)
 ├── setup.sh                        # One-click environment setup (uv + DP venv)
 └── pyproject.toml                  # Dependencies and project metadata
 ```
@@ -161,7 +162,29 @@ python train.py \
     --epochs 3000 --device cuda
 ```
 
-### Evaluation
+### Real Robot Inference (UR3e)
+
+Hardware: UR3e + Weiss CRG 30-050 gripper + dual Intel RealSense cameras.
+
+```bash
+# Install robot dependencies
+pip install ur-rtde pyrealsense2 pyserial opencv-python
+
+# Dry run (verify full pipeline without sending robot commands)
+python inference.py --checkpoint outputs/policy_final.pt \
+    --robot_ip 10.0.0.1 --dry_run
+
+# Real deployment
+python inference.py --checkpoint outputs/policy_final.pt \
+    --robot_ip 10.0.0.1 --frequency 10 --max_steps 500
+
+# Without gripper / custom camera serials
+python inference.py --checkpoint outputs/policy_final.pt \
+    --robot_ip 10.0.0.1 --no_gripper \
+    --cam_exterior 105422061000 --cam_wrist 352122273671
+```
+
+### Evaluation (Mock)
 ```bash
 python eval.py --checkpoint outputs/policy_final.pt --device cuda --mock
 ```
