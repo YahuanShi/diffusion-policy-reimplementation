@@ -13,6 +13,7 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
 - [ ] **Checkpoints** — Release trained checkpoints with download link
 - [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
+- [x] **Simulation results** — robomimic Lift / Can in the shared Franka simulation (see [Simulation](#simulation-franka-panda))
 - [ ] **Real-robot success rate** — run N trials with `inference.py --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
 
 Tooling for all three is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is training a model and running the trials on the robot.
@@ -227,17 +228,24 @@ uv pip install --python DP/bin/python -e ../robot-sim
 
 # train (84×84 images, random crop 76×76, absolute 10-dim actions)
 python train.py --repo_id local/robomimic_lift_ph_abs_84 --root ../robot-sim/data/lerobot/lift_ph_abs_84 \
-    --max_steps 20000 --batch 64 --crop 76 76 --output_dir outputs/sim_lift
+    --max_steps 30000 --batch 64 --crop 76 76 --output_dir outputs/sim_lift
 
 # closed-loop evaluation: 50 seeded episodes, videos of the first 5
-python eval.py --checkpoint outputs/sim_lift/checkpoint_step5000.pt --device cuda \
+python eval.py --checkpoint outputs/sim_lift/policy_final.pt --device cuda \
     --sim lift --n_episodes 50 --video_dir outputs/sim_lift/videos
 ```
 
-| Task | Steps | Success (seeds 100000–100019) |
-|---|---|---|
-| lift | 5k | 20/20 (95% CI 84–100%) |
-| can | — | training |
+Results (50 episodes, seeds 100000–100049, 95% Wilson interval):
+
+| Policy | Training | Lift | Can |
+|---|---|---|---|
+| Diffusion Policy (U-Net) | 30k steps | **50/50 = 100%** (93–100%) | **48/50 = 96%** (87–99%) |
+
+Lift is saturated and Can is in line with the paper (image-based Can ph: 1.00 best /
+0.97 average of the last checkpoints). Default hyperparameters (To=2, Ta=8, horizon 16,
+DDIM 16 steps), untuned for these tasks.
+Each episode seeds torch with its environment seed (`DiffusionSimPolicy.reset`), so reruns
+reproduce the diffusion sampling; only pixel-level EGL rendering noise remains.
 
 `robot-sim` is not a declared dependency (CI has no `../robot-sim` checkout): the sim
 tests skip when it is not installed, and a later `uv sync` removes it again.
