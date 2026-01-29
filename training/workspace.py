@@ -187,6 +187,10 @@ def train_image(repo_id, root=None, episodes=None,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'normalizer_state_dict': normalizer.state_dict(),
                 'shape_meta': shape_meta,
+                'model_cfg': {
+                    'down_dims': list(down_dims),
+                    'diffusion_step_embed_dim': diffusion_step_embed_dim,
+                },
             }
             path = os.path.join(output_dir, f'checkpoint_epoch{epoch+1}.pt')
             torch.save(ckpt, path)
@@ -198,6 +202,10 @@ def train_image(repo_id, root=None, episodes=None,
         'policy_state_dict': policy.state_dict(),
         'normalizer_state_dict': normalizer.state_dict(),
         'shape_meta': shape_meta,
+        'model_cfg': {
+            'down_dims': list(down_dims),
+            'diffusion_step_embed_dim': diffusion_step_embed_dim,
+        },
     }, final_path)
     if use_wandb:
         wandb.finish()

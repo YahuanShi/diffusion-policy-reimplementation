@@ -22,6 +22,9 @@ from evaluation.runner import EvalRunner, MockEnv
 def load_policy(checkpoint_path, device='cpu', resize_shape=None):
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     shape_meta = payload['shape_meta']
+    model_cfg = payload.get('model_cfg', {})
+    down_dims = model_cfg.get('down_dims', [256, 512, 1024])
+    diffusion_step_embed_dim = model_cfg.get('diffusion_step_embed_dim', 256)
 
     normalizer = LinearNormalizer()
     normalizer.load_state_dict(payload['normalizer_state_dict'])
@@ -39,6 +42,8 @@ def load_policy(checkpoint_path, device='cpu', resize_shape=None):
         n_obs_steps=2,
         n_action_steps=8,
         num_inference_steps=100,
+        diffusion_step_embed_dim=diffusion_step_embed_dim,
+        down_dims=down_dims,
     )
     policy.set_normalizer(normalizer)
     policy.load_state_dict(payload['policy_state_dict'])
