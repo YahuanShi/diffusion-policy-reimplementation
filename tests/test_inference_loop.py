@@ -7,6 +7,7 @@ Validates:
   - the measured gripper width maps to the training-data convention (1 = open)
   - TrialRecorder writes videos, steps.npz and meta.json for the trial
   - timing statistics are collected for every executed step
+  - the pre-run state check flags dims far outside the training range
 """
 
 import json
@@ -107,3 +108,19 @@ def test_gripper_state_matches_training_convention():
     # Training data: 1 = open (jaws apart), 0 = closed (holding the object)
     assert inference.gripper_state_from_width(inference.GRIPPER_MAX_MM) == 1.0
     assert inference.gripper_state_from_width(0.0) == 0.0
+
+
+def test_state_range_check_flags_unit_mismatch():
+    # Normalizer fitted on degrees in [0, 100]; a radian-valued state stays inside the
+    # range here, so use a state far above it — like degrees fed to a radian-trained model
+    normalizer = LinearNormalizer()
+    normalizer.fit({"observation_state": torch.rand(100, 7) * 100})
+    inside = np.full(7, 50.0, dtype=np.float32)
+    assert inference.check_state_in_range(inside, normalizer, "observation_state") == []
+    outside = inside.copy()
+    outside[2] = 5000.0
+    assert inference.check_state_in_range(outside, normalizer, "observation_state") == [
+        2
+    ]
+    # Unknown key (e.g. image-only policy): nothing to check
+    assert inference.check_state_in_range(outside, normalizer, "missing") == []

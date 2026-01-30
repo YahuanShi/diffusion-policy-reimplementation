@@ -39,10 +39,10 @@ import time
 
 import numpy as np
 import torch
-import wandb
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from torch.utils.data import DataLoader
 
+import wandb
 from diffusion_policy.dataset.lerobot_wrapper import LeRobotImageDataset
 from diffusion_policy.model.diffusion.ema import EMAModel
 from diffusion_policy.policy.loader import build_policy
@@ -121,6 +121,8 @@ def train_image(
     val_every_steps=2000,
     max_val_batches=8,
     seed=42,
+    use_wandb=False,
+    wandb_project="Diffusion-Policy",
     wandb_run_name=None,
     resume_checkpoint=None,
 ):
@@ -272,9 +274,11 @@ def train_image(
     remaining = max_steps - global_step
     print(f"Training for {max_steps} steps ({remaining} remaining)", flush=True)
 
-    # Passing the previous run id continues the same wandb run instead of starting a new one
+    # Passing the previous run id continues the same wandb run instead of starting a new one.
+    # Without --wandb the run is disabled: every wandb call below becomes a no-op.
     run = wandb.init(
-        project="Diffusion-Policy",
+        mode="online" if use_wandb else "disabled",
+        project=wandb_project,
         name=wandb_run_name,
         id=wandb_run_id,
         config={
@@ -363,7 +367,7 @@ def train_image(
                     "normalizer_state_dict": normalizer.state_dict(),
                     "shape_meta": shape_meta,
                     "config": config,
-                    "wandb_run_id": run.id,
+                    "wandb_run_id": run.id if use_wandb else None,
                 }
                 path = os.path.join(output_dir, f"checkpoint_step{global_step}.pt")
                 torch.save(ckpt, path)
@@ -415,9 +419,10 @@ def train_image(
         },
         final_path,
     )
-    artifact = wandb.Artifact("policy", type="model", metadata=config)
-    artifact.add_file(final_path)
-    wandb.log_artifact(artifact)
+    if use_wandb:
+        artifact = wandb.Artifact("policy", type="model", metadata=config)
+        artifact.add_file(final_path)
+        wandb.log_artifact(artifact)
     wandb.finish()
     print(f"Training complete. Final model: {final_path}", flush=True)
     return policy

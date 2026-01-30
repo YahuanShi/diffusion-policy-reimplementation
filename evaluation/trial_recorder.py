@@ -2,7 +2,8 @@
 Trial recorder — saves one real-robot rollout to disk for demos and success-rate reporting.
 
 Layout of one trial (record_dir/trial_YYYYmmdd_HHMMSS/):
-  exterior.mp4, wrist.mp4  — camera streams at the control rate (one frame per executed action)
+  <camera>.mp4             — one stream per camera (e.g. exterior.mp4, wrist.mp4) at the
+                             control rate, one frame per executed action
   steps.npz                — per-step arrays: t, state, action, gripper_open, inference_ms, obs_ms
   meta.json                — checkpoint, settings, n_steps, duration, success (true/false/null), notes
 
@@ -82,8 +83,8 @@ class TrialRecorder:
         self._t0 = time.monotonic()
 
     def add_step(self, obs, action, gripper_open, inference_ms, obs_ms):
-        """obs: dict from robot.get_obs() (RGB uint8 images + state)."""
-        for key in ("exterior_rgb", "wrist_rgb"):
+        """obs: dict from robot.get_obs() — "state" plus one "<camera>_rgb" image each."""
+        for key in (k for k in obs if k.endswith("_rgb")):
             if key not in self._videos:
                 name = key.replace("_rgb", "") + ".mp4"
                 self._videos[key] = _VideoWriterThread(

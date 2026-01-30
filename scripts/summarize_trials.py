@@ -91,15 +91,15 @@ def to_markdown(rows, trials):
 
 
 def make_gif(trial_dir, out_path, fps=10, width=640, max_seconds=None):
-    """Side-by-side exterior | wrist GIF from a recorded trial."""
+    """Side-by-side GIF of all camera videos of a recorded trial (exterior | wrist)."""
     import cv2
     import imageio
     import numpy as np
 
-    caps = [
-        cv2.VideoCapture(os.path.join(trial_dir, n))
-        for n in ("exterior.mp4", "wrist.mp4")
-    ]
+    videos = sorted(glob.glob(os.path.join(trial_dir, "*.mp4")))
+    if not videos:
+        raise SystemExit(f"No videos in {trial_dir}")
+    caps = [cv2.VideoCapture(v) for v in videos]
     src_fps = caps[0].get(cv2.CAP_PROP_FPS) or 20
     stride = max(1, round(src_fps / fps))
     frames, idx = [], 0
@@ -108,8 +108,8 @@ def make_gif(trial_dir, out_path, fps=10, width=640, max_seconds=None):
         if not all(ok for ok, _ in reads):
             break
         if idx % stride == 0:
-            half = width // 2
-            tiles = [cv2.resize(f, (half, half)) for _, f in reads]
+            tile = width // len(caps)
+            tiles = [cv2.resize(f, (tile, tile)) for _, f in reads]
             frames.append(
                 cv2.cvtColor(np.concatenate(tiles, axis=1), cv2.COLOR_BGR2RGB)
             )

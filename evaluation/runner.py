@@ -57,21 +57,21 @@ class EvalRunner:
         self,
         env_factory,
         shape_meta,
-        n_test=50,
+        n_episodes=50,
         max_steps=400,
         n_obs_steps=2,
         n_action_steps=8,
     ):
         self.env_factory = env_factory
         self.shape_meta = shape_meta
-        self.n_test = n_test
+        self.n_episodes = n_episodes
         self.max_steps = max_steps
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
 
     def run(self, policy):
         results = []
-        for _ in range(self.n_test):
+        for _ in range(self.n_episodes):
             env = self.env_factory()
             result = run_episode(
                 env,

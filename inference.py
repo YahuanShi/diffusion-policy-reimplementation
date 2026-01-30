@@ -20,6 +20,8 @@ Usage:
         --steps_per_inference 6 --num_inference_steps 16
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 \
         --record_dir trials/   # save videos + actions, then ask whether the trial succeeded
+    python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 \
+        --num_episodes 20 --record_dir trials/   # 20 recorded trials in one session
 """
 
 import argparse
@@ -302,7 +304,7 @@ class RealSenseCamera:
 # ══════════════════════════════ Robot ══════════════════════════════
 
 
-class UR3eRobot:
+class URRobot:
     """UR3e robot + Weiss gripper + dual RealSense cameras."""
 
     def __init__(
@@ -421,6 +423,13 @@ class UR3eRobot:
                 f"[UR3e] Gripper {'opening' if gripper_open else 'closing'} (raw={action[6]:.2f})"
             )
 
+    def hold(self):
+        """Stop servoing and hold the current pose (between evaluation episodes)."""
+        try:
+            self._rtde_c.servoStop()
+        except Exception as e:
+            log.warning(f"[UR3e] servoStop error: {e}")
+
     def stop(self):
         try:
             self._rtde_c.servoStop()
@@ -472,7 +481,7 @@ def make_vis_frame(obs, action, step, inference_ms, eff_gripper_open=True):
 
 def make_obs_key_map(shape_meta):
     """
-    Map policy obs keys (from the checkpoint's shape_meta) to UR3eRobot.get_obs() keys.
+    Map policy obs keys (from the checkpoint's shape_meta) to URRobot.get_obs() keys.
 
     e.g. observation_images_exterior_image_1_left → exterior_rgb
          observation_images_wrist_image_left      → wrist_rgb
@@ -496,7 +505,7 @@ def build_obs_dict(obs_history, key_map, device="cuda"):
     """
     Convert raw observation history to policy input tensors.
 
-    obs_history: deque of dicts from UR3eRobot.get_obs(), length = n_obs_steps
+    obs_history: deque of dicts from URRobot.get_obs(), length = n_obs_steps
     key_map:     policy key → robot obs key (from make_obs_key_map)
     Returns: obs_dict with (1, n_obs_steps, ...) tensors, keys matching training format.
     """
@@ -509,6 +518,34 @@ def build_obs_dict(obs_history, key_map, device="cuda"):
             t = t.permute(0, 3, 1, 2) / 255.0
         obs_dict[policy_key] = t.unsqueeze(0).to(device)
     return obs_dict
+
+
+def check_state_in_range(state, normalizer, state_key, margin=0.5):
+    """
+    Warn if the robot's current state lies far outside the training range.
+
+    The normalizer maps the training [min, max] of every state dim to [-1, 1]; a
+    normalized value beyond ±(1 + margin) is more than margin/2 of the training range
+    outside it. Catches unit / convention mismatches between data collection and
+    deployment before the policy moves the arm — e.g. degrees vs radians, the gripper
+    polarity, or a home pose never seen in the data. Returns the offending dims.
+    """
+    if state_key not in normalizer:
+        return []
+    z = (
+        normalizer[state_key]
+        .normalize(torch.as_tensor(state, dtype=torch.float32))
+        .numpy()
+    )
+    bad = np.where(np.abs(z) > 1 + margin)[0]
+    if len(bad) == 0:
+        log.info(f"State check OK — max |normalized| = {np.abs(z).max():.2f}")
+    for i in bad:
+        log.warning(
+            f"state[{i}] = {state[i]:.3f} normalizes to {z[i]:+.2f} (training range = ±1) "
+            "— check units / gripper convention / home pose"
+        )
+    return bad.tolist()
 
 
 def run_inference(
@@ -740,6 +777,12 @@ def main():
         help="Control steps per trial (default: 800 = 40s at 20Hz; longest demo is ~33s)",
     )
     parser.add_argument(
+        "--num_episodes",
+        type=int,
+        default=1,
+        help="Trials in one session; the scene is reset between them",
+    )
+    parser.add_argument(
         "--record_dir",
         default=None,
         help="Save each trial (videos, actions, timing) here and ask for the outcome",
@@ -796,7 +839,7 @@ def main():
         log.warning(msg)
 
     log.info(f"Connecting to UR3e at {args.robot_ip}...")
-    robot = UR3eRobot(
+    robot = URRobot(
         robot_ip=args.robot_ip,
         frequency=frequency,
         use_gripper=not args.no_gripper,
@@ -805,50 +848,66 @@ def main():
         max_joint_vel=args.max_joint_vel,
     )
 
-    recorder = None
-    if args.record_dir:
-        from evaluation.trial_recorder import TrialRecorder
-
-        recorder = TrialRecorder(
-            args.record_dir,
-            fps=frequency,
-            meta={
-                "checkpoint": args.checkpoint,
-                "frequency": frequency,
-                "steps_per_inference": args.steps_per_inference,
-                "num_inference_steps": args.num_inference_steps,
-                "max_steps": args.max_steps,
-                "dry_run": args.dry_run,
-            },
-        )
-        log.info(f"Recording trial to {recorder.trial_dir}")
-
+    state_key = next(
+        k for k, v in shape_meta["obs"].items() if v.get("type") == "low_dim"
+    )
     try:
-        # A dry run must never move the robot — not even to home
-        if args.dry_run:
-            log.info("[dry run] Skipping homing — robot and gripper will not move.")
-        else:
-            robot.home()
+        for ep in range(args.num_episodes):
+            if args.num_episodes > 1:
+                input(
+                    f"\n[Trial {ep + 1}/{args.num_episodes}] Reset the scene, then press Enter"
+                )
 
-        run_inference(
-            policy=policy,
-            robot=robot,
-            shape_meta=shape_meta,
-            device=args.device,
-            frequency=frequency,
-            steps_per_inference=args.steps_per_inference,
-            max_steps=args.max_steps,
-            dry_run=args.dry_run,
-            recorder=recorder,
-        )
+            # A dry run must never move the robot — not even to home
+            if args.dry_run:
+                log.info("[dry run] Skipping homing — robot and gripper will not move.")
+            else:
+                robot.home()
+            check_state_in_range(robot.get_obs()["state"], policy.normalizer, state_key)
+
+            recorder = None
+            if args.record_dir:
+                from evaluation.trial_recorder import TrialRecorder
+
+                recorder = TrialRecorder(
+                    args.record_dir,
+                    fps=frequency,
+                    meta={
+                        "checkpoint": args.checkpoint,
+                        "frequency": frequency,
+                        "steps_per_inference": args.steps_per_inference,
+                        "num_inference_steps": args.num_inference_steps,
+                        "max_steps": args.max_steps,
+                        "dry_run": args.dry_run,
+                        "episode": ep,
+                    },
+                )
+                log.info(f"Recording trial to {recorder.trial_dir}")
+
+            try:
+                run_inference(
+                    policy=policy,
+                    robot=robot,
+                    shape_meta=shape_meta,
+                    device=args.device,
+                    frequency=frequency,
+                    steps_per_inference=args.steps_per_inference,
+                    max_steps=args.max_steps,
+                    dry_run=args.dry_run,
+                    recorder=recorder,
+                )
+            finally:
+                # Freeze the arm where it is before talking to the operator
+                if not args.dry_run:
+                    robot.hold()
+                if recorder is not None:
+                    from evaluation.trial_recorder import ask_trial_outcome
+
+                    success, notes = ask_trial_outcome()
+                    log.info(f"Saved trial to {recorder.close(success, notes)}")
     finally:
         # Always release cameras and serial port (also in a dry run)
         robot.stop()
-        if recorder is not None:
-            from evaluation.trial_recorder import ask_trial_outcome
-
-            success, notes = ask_trial_outcome()
-            log.info(f"Saved trial to {recorder.close(success, notes)}")
 
 
 if __name__ == "__main__":
