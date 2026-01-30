@@ -16,7 +16,7 @@ closed loop from 84×84 camera images. Real-robot demo pending (no real-robot da
 
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment (simulation demo above)
 - [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
-- [x] **Simulation results** — robomimic Lift / Can in the shared Franka simulation (see [Simulation](#simulation-franka-panda))
+- [x] **Simulation results** — robomimic Lift / Can / Square in the shared Franka simulation (see [Simulation](#simulation-franka-panda))
 - [ ] **Real-robot success rate** — run N trials with `inference.py --num_episodes N --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
 
 Tooling for the real-robot items is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is collecting real-robot data, training on it and running the trials.
@@ -240,13 +240,15 @@ python eval.py --checkpoint outputs/sim_lift/policy_final.pt --device cuda \
 
 Results (50 episodes, seeds 100000–100049, 95% Wilson interval):
 
-| Policy | Training | Lift | Can |
-|---|---|---|---|
-| Diffusion Policy (U-Net) | 30k steps | **50/50 = 100%** (93–100%) | **48/50 = 96%** (87–99%) |
+| Policy | Training | Lift | Can | Square |
+|---|---|---|---|---|
+| Diffusion Policy (U-Net) | 30k steps | **50/50 = 100%** (93–100%) | **48/50 = 96%** (87–99%) | 35/50 = 70% (56–81%) |
 
 Lift is saturated and Can is in line with the paper (image-based Can ph: 1.00 best /
-0.97 average of the last checkpoints). Default hyperparameters (To=2, Ta=8, horizon 16,
-DDIM 16 steps), untuned for these tasks.
+0.97 average of the last checkpoints). Square, the hardest task, reaches 70% against the
+paper's 0.98 / 0.92, after far less training (30k steps ≈ 79 epochs; the paper trains
+image policies for 3000 epochs). Default hyperparameters (To=2, Ta=8, horizon 16, DDIM
+16 steps), untuned for these tasks.
 Each episode seeds torch with its environment seed (`DiffusionSimPolicy.reset`), so reruns
 reproduce the diffusion sampling; only pixel-level EGL rendering noise remains.
 
