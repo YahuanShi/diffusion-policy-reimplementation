@@ -6,20 +6,9 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 ![Diffusion Policy in simulation](docs/sim_demo.gif)
 
-Diffusion Policy in the shared Franka simulation ([robot-sim](../robot-sim)): robomimic Lift and Can,
+Diffusion Policy in the shared Franka simulation ([robot-sim](https://github.com/YahuanShi/robot-sim)): robomimic Lift and Can,
 closed loop from 84×84 camera images. Real-robot demo pending (no real-robot data yet).
 
-
----
-
-## TODO
-
-- [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment (simulation demo above)
-- [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
-- [x] **Simulation results** — robomimic Lift / Can / Square in the shared Franka simulation (see [Simulation](#simulation-franka-panda))
-- [ ] **Real-robot success rate** — run N trials with `inference.py --num_episodes N --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
-
-Tooling for the real-robot items is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is collecting real-robot data, training on it and running the trials.
 
 ---
 
@@ -222,7 +211,7 @@ python eval.py --checkpoint outputs/my_run/policy_final.pt --mock
 ### Simulation (Franka Panda)
 
 While the real robot is unavailable, policies are trained and evaluated in the shared
-simulation repo [`../robot-sim`](../robot-sim) (robosuite Franka Panda + robomimic demos,
+simulation repo [`../robot-sim`](https://github.com/YahuanShi/robot-sim) (robosuite Franka Panda + robomimic demos,
 converted to LeRobot v3). Evaluation uses fixed seeds, so every checkpoint is scored on
 the same initial object placements.
 
@@ -317,11 +306,11 @@ python scripts/hdf5_to_lerobot.py \
 
 ## Results
 
-<!-- Fill in from `python scripts/summarize_trials.py --record_dir trials/ --markdown trials/results.md` -->
+Real robot: pending — no real-robot data yet. The trial tooling is in place (see
+[Recording Trials](#recording-trials-demo--success-rate)); results will be filled in with
+`scripts/summarize_trials.py`.
 
-| Checkpoint | Success | Rate | 95% CI | Mean duration |
-|---|---|---|---|---|
-| — | — | — | — | — |
+Simulation: see [Simulation (Franka Panda)](#simulation-franka-panda).
 
 ---
 
