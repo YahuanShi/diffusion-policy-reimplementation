@@ -240,6 +240,18 @@ Lift is saturated and Can is in line with the paper (image-based Can ph: 1.00 be
 paper's 0.98 / 0.92, after far less training (30k steps ≈ 79 epochs; the paper trains
 image policies for 3000 epochs). Default hyperparameters (To=2, Ta=8, horizon 16, DDIM
 16 steps), untuned for these tasks.
+
+Longer training on Square: one 150k-step run (≈ 397 epochs, cosine schedule over the full
+run, `--save_every_steps 30000`), each checkpoint evaluated on the same 50 seeds:
+
+| Checkpoint | 30k | 60k | 90k | 120k | 150k |
+|---|---|---|---|---|---|
+| Square | 36/50 = 72% (58–83%) | 40/50 = 80% (67–89%) | **45/50 = 90%** (79–96%) | **45/50 = 90%** (79–96%) | 42/50 = 84% (71–92%) |
+
+Success rises from 72% to 90% by 90k steps and then plateaus (84–90%, overlapping
+intervals). Best checkpoint 90% and mean over the five 83%, against the paper's 0.98 best /
+0.92 average of the last 10 checkpoints, still with about 8× fewer epochs. The 30k
+checkpoint here is not the 30k run above: its learning rate is still high at that point.
 Each episode seeds torch with its environment seed (`DiffusionSimPolicy.reset`), so reruns
 reproduce the diffusion sampling; only pixel-level EGL rendering noise remains.
 
