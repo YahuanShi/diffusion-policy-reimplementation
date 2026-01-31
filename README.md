@@ -64,7 +64,7 @@ Diffusion Policy instead learns the reverse of a noise-corruption process:
 Forward: action → noisy_action  (add Gaussian noise over T steps)
 Reverse: noisy_action → action  (learned denoiser conditioned on obs)
 ```
-At inference: sample pure Gaussian noise, run 100 denoising steps conditioned on the current observation → produces a clean action sequence.
+At inference: sample pure Gaussian noise, run the reverse process conditioned on the current observation → produces a clean action sequence. Training uses 100 DDPM noise levels; inference defaults to 16 DDIM steps over the same noise schedule (`--num_inference_steps`), ~6× faster (`scripts/benchmark_inference.py`).
 
 **Why this works**: representing the action distribution as a reverse diffusion process naturally captures **multimodal behavior** (e.g., going left or right around an obstacle) that MSE regression or Gaussian policies collapse to the mean.
 
@@ -74,15 +74,17 @@ At inference: sample pure Gaussian noise, run 100 denoising steps conditioned on
 The policy reasons over a temporal window, not a single timestep:
 
 ```
-Timeline:
-    [obs_{t-1}, obs_t] → PREDICT [a_t, a_{t+1}, ..., a_{t+7}]
-     ↑ To=2 obs steps              ↑ Ta=8 action steps
-     |<------------- Horizon H=16 ------------->|
+Timeline (H=16, To=2, Ta=8):
+    predicted:  a_{t-1} | a_t a_{t+1} ... a_{t+7} | a_{t+8} ... a_{t+14}
+                 ↑ obs     ↑ executed (Ta=8)        ↑ predicted, discarded
+    condition:  [obs_{t-1}, obs_t]   (To=2)
 ```
 
-- **Observation horizon** `To=2`: condition on last 2 image frames
-- **Action horizon** `Ta=8`: predict 8 future actions at once
-- **Execute** only the first `n_action_steps` actions before re-planning
+- **Observation horizon** `To=2`: condition on the last 2 image frames
+- **Prediction horizon** `H=16` (`--horizon`): the denoiser generates 16 actions at once,
+  aligned so that index `To-1` is the current step
+- **Action horizon** `Ta=8` (`n_action_steps`): execute only `action[To-1 : To-1+Ta]`,
+  then re-plan from a new observation; the rest of the chunk is discarded
 
 This receding-horizon control reduces compounding errors vs. single-step prediction.
 
