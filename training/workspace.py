@@ -39,10 +39,10 @@ import time
 
 import numpy as np
 import torch
+import wandb
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from torch.utils.data import DataLoader
 
-import wandb
 from diffusion_policy.dataset.lerobot_wrapper import LeRobotImageDataset
 from diffusion_policy.model.diffusion.ema import EMAModel
 from diffusion_policy.policy.loader import build_policy
