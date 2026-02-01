@@ -11,14 +11,14 @@ dependencies = [
     "lerobot>=0.4",
     "h5py",
     "tqdm",
-    "zarr",
     "av",
+    "wandb",
 ]
 
 [project.optional-dependencies]
 dev = [
     "matplotlib",
-    "wandb",
+    "pytest",
 ]
 
 [tool.uv.sources]

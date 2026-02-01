@@ -1,56 +1,48 @@
 """
-Evaluation entry point — loads a trained checkpoint and runs rollouts.
+Evaluation entry point — loads a trained image policy checkpoint and runs rollouts.
 
-Loads a lowdim policy checkpoint, reconstructs the model architecture from
-the saved normalizer dimensions, and evaluates over multiple episodes.
-
-The model architecture (U-Net dims, horizon, etc.) is hardcoded here to match
-the training config. In production, these should be saved in the checkpoint.
+The checkpoint contains shape_meta and normalizer, so the model architecture
+is fully reconstructed without hardcoding dimensions.
 
 Usage:
-    python eval.py --checkpoint outputs/policy_final.pt --mock   # mock env
-    python eval.py --checkpoint outputs/policy_final.pt          # real env (needs robomimic)
+    python eval.py --checkpoint outputs/policy_final.pt --mock
+    python eval.py --checkpoint outputs/policy_final.pt --device cuda --mock
 """
 
 import argparse
-import json
 import torch
 
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
-from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.normalizer import LinearNormalizer
-from diffusion_policy.policy.lowdim import DiffusionUnetLowdimPolicy
+from diffusion_policy.policy.image import DiffusionUnetImagePolicy
 from eval.runner import EvalRunner, MockEnv
 
 
-def load_policy(checkpoint_path, device='cpu'):
-    payload = torch.load(checkpoint_path, map_location=device)
+def load_policy(checkpoint_path, device='cpu', resize_shape=None):
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    shape_meta = payload['shape_meta']
+
     normalizer = LinearNormalizer()
     normalizer.load_state_dict(payload['normalizer_state_dict'])
 
-    state_dict = payload['policy_state_dict']
-    obs_dim = normalizer['obs'].scale.shape[0]
-    action_dim = normalizer['action'].scale.shape[0]
-
-    model = ConditionalUnet1D(
-        input_dim=action_dim,
-        global_cond_dim=obs_dim * 2,
-        down_dims=[256, 512, 1024],
-        diffusion_step_embed_dim=256,
+    encoder = MultiImageObsEncoder(
+        shape_meta, use_group_norm=True,
+        resize_shape=resize_shape,
     )
     scheduler = DDPMScheduler(num_train_timesteps=100)
-    policy = DiffusionUnetLowdimPolicy(
-        model=model,
+    policy = DiffusionUnetImagePolicy(
+        obs_encoder=encoder,
         noise_scheduler=scheduler,
+        shape_meta=shape_meta,
         horizon=16,
-        obs_dim=obs_dim,
-        action_dim=action_dim,
         n_obs_steps=2,
         n_action_steps=8,
         num_inference_steps=100,
     )
     policy.set_normalizer(normalizer)
-    policy.load_state_dict(state_dict)
+    policy.load_state_dict(payload['policy_state_dict'])
+    policy.to(device)
     policy.eval()
     return policy
 
@@ -61,23 +53,25 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--n_test', type=int, default=50)
     parser.add_argument('--mock', action='store_true')
+    parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'))
     args = parser.parse_args()
 
-    policy = load_policy(args.checkpoint, args.device)
+    policy = load_policy(
+        args.checkpoint, args.device,
+        resize_shape=tuple(args.resize) if args.resize else None)
 
     if args.mock:
-        env_factory = lambda: MockEnv(
-            obs_dim=policy.obs_dim,
-            action_dim=policy.action_dim)
+        action_dim = policy.action_dim
+        env_factory = lambda: MockEnv(obs_dim=4, action_dim=action_dim)
     else:
         raise NotImplementedError(
-            "Real env evaluation requires robomimic. Use --mock for testing.")
+            "Real env evaluation requires a gym environment. Use --mock for testing.")
 
     runner = EvalRunner(
         env_factory=env_factory,
         n_test=args.n_test,
-        n_obs_steps=policy.n_obs_steps,
-        n_action_steps=policy.n_action_steps,
+        n_obs_steps=2,
+        n_action_steps=8,
     )
     result = runner.run(policy)
     print(f"mean_reward: {result['mean_reward']:.4f} +/- {result['std_reward']:.4f}")
