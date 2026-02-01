@@ -26,7 +26,7 @@ def get_resnet(name='resnet18', weights=None):
 
 
 def replace_submodules(root_module, predicate, func):
-    """递归替换模块中满足 predicate 的子模块。用于 BatchNorm → GroupNorm 替换。"""
+    """Replace submodules matching predicate. Used for BatchNorm → GroupNorm swap."""
     if predicate(root_module):
         return func(root_module)
     bn_list = [k.split('.') for k, m

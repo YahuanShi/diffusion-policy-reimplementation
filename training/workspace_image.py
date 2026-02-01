@@ -15,6 +15,7 @@ Usage:
 """
 
 import os
+import time
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -41,7 +42,8 @@ def train_image(repo_id, root=None, episodes=None,
                 num_workers=2,
                 resize_shape=None,
                 use_wandb=True,
-                wandb_run_name=None):
+                wandb_run_name=None,
+                resume_checkpoint=None):
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -91,6 +93,20 @@ def train_image(repo_id, root=None, episodes=None,
 
     n_params = sum(p.numel() for p in policy.parameters())
     print(f"Model params: {n_params:,}")
+
+    start_epoch = 0
+    global_step = 0
+    if resume_checkpoint is not None:
+        ckpt = torch.load(resume_checkpoint, map_location=device)
+        policy.load_state_dict(ckpt['policy_state_dict'])
+        ema.load_state_dict(ckpt['ema_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        start_epoch = ckpt['epoch'] + 1
+        global_step = ckpt['global_step']
+        for _ in range(global_step):
+            lr_scheduler.step()
+        print(f"Resumed from {resume_checkpoint} (epoch {start_epoch}, step {global_step})")
+
     print(f"Training for {num_epochs} epochs ({total_steps} steps)")
 
     if use_wandb:
@@ -115,18 +131,19 @@ def train_image(repo_id, root=None, episodes=None,
                 'obs_keys': list(shape_meta['obs'].keys()),
                 'action_dim': shape_meta['action']['shape'][0],
             },
+            resume='allow',
         )
 
-    global_step = 0
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         policy.train()
         epoch_losses = []
+        epoch_start = time.time()
 
         for batch in dataloader:
             batch_gpu = {k: v.to(device) for k, v in batch.items()}
             loss = policy.compute_loss(batch_gpu)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
             lr_scheduler.step()
@@ -137,21 +154,29 @@ def train_image(repo_id, root=None, episodes=None,
             global_step += 1
 
             if use_wandb:
-                wandb.log({
+                log_dict = {
                     'train/loss': step_loss,
                     'train/lr': optimizer.param_groups[0]['lr'],
                     'train/ema_decay': ema.decay,
-                }, step=global_step)
+                    'train/grad_norm': grad_norm.item(),
+                }
+                wandb.log(log_dict, step=global_step)
 
+        epoch_time = time.time() - epoch_start
         avg_loss = np.mean(epoch_losses)
         if use_wandb:
-            wandb.log({
+            epoch_log = {
                 'epoch/loss': avg_loss,
                 'epoch/epoch': epoch,
-            }, step=global_step)
+                'epoch/time_sec': epoch_time,
+            }
+            if torch.cuda.is_available():
+                epoch_log['epoch/gpu_mem_gb'] = torch.cuda.max_memory_allocated(device) / 1e9
+                torch.cuda.reset_peak_memory_stats(device)
+            wandb.log(epoch_log, step=global_step)
         if epoch % 50 == 0 or epoch == num_epochs - 1:
             lr_now = optimizer.param_groups[0]['lr']
-            print(f"epoch {epoch:>5}/{num_epochs}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f}")
+            print(f"epoch {epoch:>5}/{num_epochs}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f} time={epoch_time:.1f}s")
 
         if (epoch + 1) % checkpoint_every == 0 or epoch == num_epochs - 1:
             ckpt = {
