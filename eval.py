@@ -16,7 +16,7 @@ from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.normalizer import LinearNormalizer
 from diffusion_policy.policy.image import DiffusionUnetImagePolicy
-from eval.runner import EvalRunner, MockEnv
+from evaluation.runner import EvalRunner, MockEnv
 
 
 def load_policy(checkpoint_path, device='cpu', resize_shape=None):

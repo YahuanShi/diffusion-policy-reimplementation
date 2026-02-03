@@ -39,7 +39,7 @@ if __name__ == '__main__':
     parser.add_argument('--wandb_run_name', default=None, help='Wandb run name')
     args = parser.parse_args()
 
-    from training.workspace_image import train_image
+    from training.workspace import train_image
     train_image(
         repo_id=args.repo_id,
         root=args.root,

@@ -108,18 +108,17 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   └── policy/
 │       └── image.py                # Image-conditioned diffusion policy
 ├── training/
-│   └── workspace_image.py          # Image training workspace (LeRobot pipeline)
-├── eval/
+│   └── workspace.py                # Training workspace (LeRobot pipeline)
+├── evaluation/
 │   └── runner.py                   # Evaluation runner with action chunking loop
 ├── tests/
 │   └── test_integration.py         # End-to-end pipeline smoke test
 ├── scripts/
 │   └── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
-├── experiments/                     # Stage-by-stage validation scripts
+├── experiments/                     # Validation scripts
 │   ├── 01_ddpm_toy.py              # DDPM on toy 1D data
-│   ├── 04_encoder_test.py          # Vision encoder unit test
-│   ├── 05_image_policy_test.py     # Image policy integration test
-│   └── 06_train_smoke.py           # Full training smoke test
+│   ├── 02_encoder_test.py          # Vision encoder unit test
+│   └── 03_image_policy_test.py     # Image policy integration test
 ├── train.py                        # Training entry point
 ├── eval.py                         # Evaluation entry point
 ├── setup.sh                        # One-click environment setup (uv + DP venv)
