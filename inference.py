@@ -16,6 +16,8 @@ Action format: (7,) = [6 joint angles in rad (absolute), 1 gripper (0=open, 1=cl
 Usage:
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 --dry_run
+    python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 \
+        --frequency 10 --steps_per_inference 6 --num_inference_steps 16
 """
 
 import argparse
@@ -28,12 +30,22 @@ import cv2
 import numpy as np
 import torch
 
-from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.scheduler import DDIMScheduler
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.normalizer import LinearNormalizer
 from diffusion_policy.policy.image import DiffusionUnetImagePolicy
 
 log = logging.getLogger(__name__)
+
+
+def precise_wait(t_end, slack=0.001, time_func=time.monotonic):
+    """Sleep until t_end with sub-millisecond accuracy (sleep + busy-wait)."""
+    t_now = time_func()
+    if t_now < t_end - slack:
+        time.sleep(t_end - t_now - slack)
+    while time_func() < t_end:
+        pass
+
 
 # ══════════════════════════════ Configuration ══════════════════════════════
 
@@ -182,7 +194,6 @@ def _start_realsense(serial_num):
 
 
 def _grab_frame(pipeline, retries=3):
-    import pyrealsense2 as rs
     for attempt in range(retries):
         frames = pipeline.wait_for_frames(timeout_ms=500)
         color = frames.get_color_frame()
@@ -305,12 +316,9 @@ class UR3eRobot:
 
 # ══════════════════════════════ Policy Loader ══════════════════════════════
 
-def load_policy(checkpoint_path, device='cuda', resize_shape=None):
+def load_policy(checkpoint_path, device='cuda', resize_shape=None, num_inference_steps=16):
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     shape_meta = payload['shape_meta']
-    model_cfg = payload.get('model_cfg', {})
-    down_dims = model_cfg.get('down_dims', [256, 512, 1024])
-    diffusion_step_embed_dim = model_cfg.get('diffusion_step_embed_dim', 256)
 
     normalizer = LinearNormalizer()
     normalizer.load_state_dict(payload['normalizer_state_dict'])
@@ -319,7 +327,8 @@ def load_policy(checkpoint_path, device='cuda', resize_shape=None):
         shape_meta, use_group_norm=True,
         resize_shape=resize_shape,
     )
-    scheduler = DDPMScheduler(num_train_timesteps=100)
+    # DDIM at inference: 16 deterministic steps instead of 100 DDPM steps (~6x faster)
+    scheduler = DDIMScheduler(num_train_timesteps=100)
     policy = DiffusionUnetImagePolicy(
         obs_encoder=encoder,
         noise_scheduler=scheduler,
@@ -327,15 +336,34 @@ def load_policy(checkpoint_path, device='cuda', resize_shape=None):
         horizon=16,
         n_obs_steps=2,
         n_action_steps=8,
-        num_inference_steps=100,
-        diffusion_step_embed_dim=diffusion_step_embed_dim,
-        down_dims=down_dims,
+        num_inference_steps=num_inference_steps,
+        diffusion_step_embed_dim=256,
+        down_dims=[256, 512, 1024],
     )
     policy.set_normalizer(normalizer)
     policy.load_state_dict(payload['policy_state_dict'])
     policy.to(device)
     policy.eval()
     return policy, shape_meta
+
+
+def make_vis_frame(obs, action, step, inference_ms):
+    """Side-by-side exterior + wrist camera view with status overlay."""
+    ext = cv2.cvtColor(obs['exterior_rgb'], cv2.COLOR_RGB2BGR)
+    wrist = cv2.cvtColor(obs['wrist_rgb'], cv2.COLOR_RGB2BGR)
+    disp = 320
+    frame = np.concatenate(
+        [cv2.resize(ext, (disp, disp)), cv2.resize(wrist, (disp, disp))], axis=1)
+    lines = [
+        f'Step: {step}',
+        f'Infer: {inference_ms:.0f}ms',
+        f'Gripper: {"open" if action[6] < 0.5 else "close"}',
+        "q / ESC — stop",
+    ]
+    for i, txt in enumerate(lines):
+        cv2.putText(frame, txt, (10, 22 + i * 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    return frame
 
 
 # ══════════════════════════════ Inference Loop ══════════════════════════════
@@ -365,52 +393,75 @@ def build_obs_dict(obs_history, device='cuda'):
 
 def run_inference(policy, robot, device='cuda',
                   n_obs_steps=2, n_action_steps=8,
+                  steps_per_inference=6,
                   max_steps=500, frequency=10,
                   dry_run=False):
     dt = 1.0 / frequency
+    frame_latency = 1.0 / 30  # camera runs at 30 fps
     obs_history = deque(maxlen=n_obs_steps)
 
+    # Fill obs history before first inference
+    log.info("Warming up cameras...")
     for _ in range(n_obs_steps):
         obs_history.append(robot.get_obs())
         time.sleep(dt)
 
-    log.info(f"Inference started (max_steps={max_steps}, freq={frequency}Hz, dry_run={dry_run})")
+    # One warm-up inference pass to trigger CUDA kernel compilation
+    log.info("Warming up policy inference...")
+    with torch.no_grad():
+        policy.predict_action(build_obs_dict(obs_history, device))
+    log.info(f"Ready. freq={frequency}Hz  steps_per_inference={steps_per_inference}  "
+             f"max_steps={max_steps}  dry_run={dry_run}")
 
     step = 0
+    iter_idx = 0
+    t_start = time.monotonic()
+
     try:
         while step < max_steps:
+            # Deadline for this inference cycle
+            t_cycle_end = t_start + (iter_idx + steps_per_inference) * dt
+
             obs_dict = build_obs_dict(obs_history, device)
 
-            t0 = time.time()
+            t_inf = time.monotonic()
             with torch.no_grad():
                 action_chunk = policy.predict_action(obs_dict)
-            inference_ms = (time.time() - t0) * 1000
+            inference_ms = (time.monotonic() - t_inf) * 1000
 
             actions = action_chunk[0].cpu().numpy()  # (n_action_steps, action_dim)
-
             log.info(f"step {step:>4}: inference={inference_ms:.0f}ms")
 
-            for i in range(n_action_steps):
-                t_start = time.time()
+            n_exec = min(steps_per_inference, n_action_steps, max_steps - step)
+            for i in range(n_exec):
+                # Wait until this action's scheduled time slot
+                precise_wait(t_start + (iter_idx + i) * dt)
 
                 if not dry_run:
                     robot.apply_action(actions[i])
 
-                obs_history.append(robot.get_obs())
+                obs = robot.get_obs()
+                obs_history.append(obs)
+
+                # Visualize — non-blocking, matches model input (same crop+resize)
+                cv2.imshow('Diffusion Policy', make_vis_frame(obs, actions[i], step, inference_ms))
+                key = cv2.pollKey()
+                if key in (ord('q'), 27):  # q or ESC
+                    raise KeyboardInterrupt
 
                 step += 1
-                if step >= max_steps:
-                    break
 
-                elapsed = time.time() - t_start
-                time.sleep(max(0, dt - elapsed))
+            # Wait until cycle end, leaving one camera frame of slack for next obs
+            precise_wait(t_cycle_end - frame_latency)
+            iter_idx += steps_per_inference
 
     except KeyboardInterrupt:
-        log.info("Interrupted by user")
+        log.info("Stopped by user.")
     finally:
+        cv2.destroyAllWindows()
         if not dry_run:
             robot.stop()
-        log.info(f"Inference ended at step {step}")
+        log.info(f"Inference ended at step {step}.")
 
 
 # ══════════════════════════════ Main ══════════════════════════════
@@ -421,6 +472,10 @@ def main():
     parser.add_argument('--robot_ip', required=True)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--frequency', type=int, default=10)
+    parser.add_argument('--steps_per_inference', type=int, default=6,
+                        help='Actions to execute per inference cycle (default: 6)')
+    parser.add_argument('--num_inference_steps', type=int, default=16,
+                        help='DDIM denoising steps at inference (default: 16)')
     parser.add_argument('--max_steps', type=int, default=500)
     parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'))
     parser.add_argument('--no_gripper', action='store_true')
@@ -437,8 +492,10 @@ def main():
     log.info("Loading policy...")
     policy, shape_meta = load_policy(
         args.checkpoint, args.device,
-        resize_shape=tuple(args.resize) if args.resize else None)
-    log.info(f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}")
+        resize_shape=tuple(args.resize) if args.resize else None,
+        num_inference_steps=args.num_inference_steps)
+    log.info(f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}, "
+             f"DDIM steps: {args.num_inference_steps}")
 
     log.info(f"Connecting to UR3e at {args.robot_ip}...")
     robot = UR3eRobot(
@@ -456,6 +513,7 @@ def main():
         robot=robot,
         device=args.device,
         frequency=args.frequency,
+        steps_per_inference=args.steps_per_inference,
         max_steps=args.max_steps,
         dry_run=args.dry_run,
     )

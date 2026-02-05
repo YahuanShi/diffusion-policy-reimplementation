@@ -14,7 +14,7 @@ echo "Creating environment '$ENV_NAME' ..."
 uv venv "$ENV_NAME" --python 3.10
 
 echo "Installing dependencies ..."
-UV_PROJECT_ENVIRONMENT="$ENV_NAME" uv sync
+UV_PROJECT_ENVIRONMENT="$ENV_NAME" uv sync --extra dev
 
 echo ""
 echo "Done. Activate with:"

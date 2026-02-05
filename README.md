@@ -8,6 +8,16 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 ---
 
+## TODO
+
+- [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
+- [ ] **Checkpoints** — Release trained checkpoints with download link
+- [ ] **Observation timestamp alignment** — `LeRobotImageDataset` currently uses `delta_timestamps = [0, 1/fps, ..., (H-1)/fps]` for both obs and action, meaning training obs covers `[t, t+1]` (current + future). Should use negative offsets `[-(To-1)/fps, ..., 0]` for obs (past → present) to match inference behavior where `obs_history = [t-To+1, ..., t]`. Fixing this requires retraining.
+- [ ] **Action extraction offset** — Currently `start = To` skips the first two predicted positions. After fixing the timestamp alignment above, validate whether `start = To - 1` (original paper convention) or `start = 0` is correct for the new alignment.
+- [ ] **Real environment evaluation** — `eval.py` currently only supports `--mock` mode with random observations. A proper evaluation requires a gym-compatible simulated environment (e.g., PushT, RoboSuite) or real robot rollout.
+
+---
+
 ## 1. Motivation
 
 This is a **from-scratch reimplementation** of Diffusion Policy, not a fork. Every line of code is written by hand after studying the original paper and codebase. The primary goal is to deeply understand how diffusion models work in robot action space; the secondary goal is to provide a clean, minimal codebase others can learn from.
@@ -148,9 +158,13 @@ Requires Python 3.10+ and a CUDA-capable GPU for training.
 ```bash
 python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
-    --epochs 3000 --batch 8 --resize 224 224 \
+    --epochs 3000 --batch 8 \
+    --resize 96 96 --crop 76 76 \
     --device cuda --output_dir outputs/my_run
 ```
+
+- `--resize H W` — resize images to H×W before the encoder (saves GPU memory)
+- `--crop H W` — random crop to H×W during training, center crop at eval (data augmentation)
 
 Wandb logging is enabled by default (project: `Diffusion-Policy`). Use `--no_wandb` to disable, or `--wandb_run_name` to set a custom run name.
 
@@ -176,13 +190,18 @@ python inference.py --checkpoint outputs/policy_final.pt \
 
 # Real deployment
 python inference.py --checkpoint outputs/policy_final.pt \
-    --robot_ip 10.0.0.1 --frequency 10 --max_steps 500
+    --robot_ip 10.0.0.1 \
+    --frequency 10 --steps_per_inference 6 --num_inference_steps 16 \
+    --max_steps 500
 
 # Without gripper / custom camera serials
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 --no_gripper \
     --cam_exterior 105422061000 --cam_wrist 352122273671
 ```
+
+- `--steps_per_inference` — actions to execute per inference cycle (default: 6)
+- `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
 
 ### Evaluation (Mock)
 ```bash
