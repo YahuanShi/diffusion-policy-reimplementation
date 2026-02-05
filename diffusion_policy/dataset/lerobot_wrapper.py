@@ -110,19 +110,11 @@ class LeRobotImageDataset(Dataset):
     def get_normalizer(self) -> LinearNormalizer:
         normalizer = LinearNormalizer()
         hf = self.ds.hf_dataset
-        n = len(hf)
 
-        all_actions = []
-        for i in range(n):
-            all_actions.append(hf[i][self.action_key])
-        stats = {'action': torch.stack(all_actions)}
-
+        # Column access is orders of magnitude faster than row-by-row iteration
+        stats = {'action': torch.tensor(hf[self.action_key])}
         if self.state_key in self.ds.features:
-            all_states = []
-            for i in range(n):
-                all_states.append(hf[i][self.state_key])
-            safe = _safe_key(self.state_key)
-            stats[safe] = torch.stack(all_states)
+            stats[_safe_key(self.state_key)] = torch.tensor(hf[self.state_key])
 
         normalizer.fit(stats)
         return normalizer

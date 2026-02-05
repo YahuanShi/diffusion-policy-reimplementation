@@ -12,7 +12,7 @@ Usage:
 import argparse
 import torch
 
-from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.scheduler import DDIMScheduler
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.normalizer import LinearNormalizer
 from diffusion_policy.policy.image import DiffusionUnetImagePolicy
@@ -22,9 +22,6 @@ from evaluation.runner import EvalRunner, MockEnv
 def load_policy(checkpoint_path, device='cpu', resize_shape=None):
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     shape_meta = payload['shape_meta']
-    model_cfg = payload.get('model_cfg', {})
-    down_dims = model_cfg.get('down_dims', [256, 512, 1024])
-    diffusion_step_embed_dim = model_cfg.get('diffusion_step_embed_dim', 256)
 
     normalizer = LinearNormalizer()
     normalizer.load_state_dict(payload['normalizer_state_dict'])
@@ -33,7 +30,7 @@ def load_policy(checkpoint_path, device='cpu', resize_shape=None):
         shape_meta, use_group_norm=True,
         resize_shape=resize_shape,
     )
-    scheduler = DDPMScheduler(num_train_timesteps=100)
+    scheduler = DDIMScheduler(num_train_timesteps=100)
     policy = DiffusionUnetImagePolicy(
         obs_encoder=encoder,
         noise_scheduler=scheduler,
@@ -41,15 +38,15 @@ def load_policy(checkpoint_path, device='cpu', resize_shape=None):
         horizon=16,
         n_obs_steps=2,
         n_action_steps=8,
-        num_inference_steps=100,
-        diffusion_step_embed_dim=diffusion_step_embed_dim,
-        down_dims=down_dims,
+        num_inference_steps=16,
+        diffusion_step_embed_dim=256,
+        down_dims=[256, 512, 1024],
     )
     policy.set_normalizer(normalizer)
     policy.load_state_dict(payload['policy_state_dict'])
     policy.to(device)
     policy.eval()
-    return policy
+    return policy, shape_meta
 
 
 if __name__ == '__main__':
@@ -61,19 +58,20 @@ if __name__ == '__main__':
     parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'))
     args = parser.parse_args()
 
-    policy = load_policy(
+    policy, shape_meta = load_policy(
         args.checkpoint, args.device,
         resize_shape=tuple(args.resize) if args.resize else None)
 
     if args.mock:
-        action_dim = policy.action_dim
-        env_factory = lambda: MockEnv(obs_dim=4, action_dim=action_dim)
+        def env_factory():
+            return MockEnv(shape_meta=shape_meta)
     else:
         raise NotImplementedError(
             "Real env evaluation requires a gym environment. Use --mock for testing.")
 
     runner = EvalRunner(
         env_factory=env_factory,
+        shape_meta=shape_meta,
         n_test=args.n_test,
         n_obs_steps=2,
         n_action_steps=8,

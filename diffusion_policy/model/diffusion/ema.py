@@ -40,21 +40,36 @@ class EMAModel:
 
     @torch.no_grad()
     def step(self, new_model):
-        """θ_ema = decay · θ_ema + (1-decay) · θ_new"""
+        """θ_ema = decay · θ_ema + (1-decay) · θ_new, module-by-module to handle buffers."""
         self.decay = self.get_decay(self.optimization_step)
-        for param, ema_param in zip(new_model.parameters(),
-                                     self.averaged_model.parameters()):
-            if not param.requires_grad:
-                ema_param.copy_(param.data)
-            else:
-                ema_param.mul_(self.decay)
-                ema_param.add_(param.data, alpha=1 - self.decay)
+        for module, ema_module in zip(new_model.modules(), self.averaged_model.modules()):
+            # Immediate parameters only (recurse=False avoids double-counting nested modules)
+            for param, ema_param in zip(
+                    module.parameters(recurse=False),
+                    ema_module.parameters(recurse=False)):
+                if not param.requires_grad:
+                    ema_param.copy_(param.data)
+                else:
+                    ema_param.mul_(self.decay)
+                    ema_param.add_(param.data, alpha=1 - self.decay)
+            # Buffers (e.g. running_mean/var in BN, or any registered buffer)
+            for buf, ema_buf in zip(
+                    module.buffers(recurse=False),
+                    ema_module.buffers(recurse=False)):
+                ema_buf.copy_(buf.data)
         self.optimization_step += 1
 
     def copy_to(self, model):
-        for param, ema_param in zip(model.parameters(),
-                                     self.averaged_model.parameters()):
-            param.data.copy_(ema_param.data)
+        """Copy EMA weights and buffers back to model."""
+        for module, ema_module in zip(model.modules(), self.averaged_model.modules()):
+            for param, ema_param in zip(
+                    module.parameters(recurse=False),
+                    ema_module.parameters(recurse=False)):
+                param.data.copy_(ema_param.data)
+            for buf, ema_buf in zip(
+                    module.buffers(recurse=False),
+                    ema_module.buffers(recurse=False)):
+                buf.data.copy_(ema_buf.data)
 
     def state_dict(self):
         return {

@@ -6,7 +6,6 @@ and a short training loop on synthetic image→action data.
 """
 
 import torch
-import torch.nn as nn
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.normalizer import LinearNormalizer

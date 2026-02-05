@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 
-def run_episode(env, policy, n_obs_steps, n_action_steps, max_steps=400):
+def run_episode(env, policy, shape_meta, n_obs_steps, n_action_steps, max_steps=400):
     obs = env.reset()
     obs_deque = deque([obs] * n_obs_steps, maxlen=n_obs_steps)
     total_reward = 0.0
@@ -26,14 +26,16 @@ def run_episode(env, policy, n_obs_steps, n_action_steps, max_steps=400):
 
     policy.eval()
     while not done and step < max_steps:
-        obs_stack = np.stack(list(obs_deque), axis=0)
-        obs_tensor = torch.tensor(obs_stack, dtype=torch.float32).unsqueeze(0)
-        obs_dict = {'obs': obs_tensor}
+        # Build obs_dict matching policy's expected keys and shapes
+        obs_dict = {}
+        for key in obs.keys():
+            stack = np.stack([o[key] for o in obs_deque])  # (T, ...)
+            obs_dict[key] = torch.tensor(stack, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
             action_seq = policy.predict_action(obs_dict)
 
-        action_seq = action_seq[0].cpu().numpy()
+        action_seq = action_seq[0].cpu().numpy()  # (n_action_steps, action_dim)
 
         for a_idx in range(min(n_action_steps, len(action_seq))):
             if done or step >= max_steps:
@@ -47,9 +49,10 @@ def run_episode(env, policy, n_obs_steps, n_action_steps, max_steps=400):
 
 
 class EvalRunner:
-    def __init__(self, env_factory, n_test=50, max_steps=400,
+    def __init__(self, env_factory, shape_meta, n_test=50, max_steps=400,
                  n_obs_steps=2, n_action_steps=8):
         self.env_factory = env_factory
+        self.shape_meta = shape_meta
         self.n_test = n_test
         self.max_steps = max_steps
         self.n_obs_steps = n_obs_steps
@@ -57,10 +60,11 @@ class EvalRunner:
 
     def run(self, policy):
         results = []
-        for i in range(self.n_test):
+        for _ in range(self.n_test):
             env = self.env_factory()
             result = run_episode(
                 env, policy,
+                shape_meta=self.shape_meta,
                 n_obs_steps=self.n_obs_steps,
                 n_action_steps=self.n_action_steps,
                 max_steps=self.max_steps)
@@ -78,19 +82,31 @@ class EvalRunner:
 
 
 class MockEnv:
-    def __init__(self, obs_dim=4, action_dim=2, episode_len=50):
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
+    """Mock environment that generates random observations matching a given shape_meta."""
+
+    def __init__(self, shape_meta, episode_len=50):
+        self.shape_meta = shape_meta
         self.episode_len = episode_len
+        self.action_dim = shape_meta['action']['shape'][0]
         self._step = 0
 
     def reset(self):
         self._step = 0
-        return np.zeros(self.obs_dim, dtype=np.float32)
+        return self._random_obs()
 
     def step(self, action):
         self._step += 1
-        obs = np.random.randn(self.obs_dim).astype(np.float32) * 0.1
-        reward = -np.sum(action ** 2)
+        obs = self._random_obs()
+        reward = float(-np.sum(action ** 2) * 0.01)
         done = self._step >= self.episode_len
         return obs, reward, done, {}
+
+    def _random_obs(self):
+        obs = {}
+        for key, attr in self.shape_meta['obs'].items():
+            shape = tuple(attr['shape'])
+            if attr.get('type') == 'rgb':
+                obs[key] = np.random.rand(*shape).astype(np.float32)
+            else:
+                obs[key] = np.zeros(shape, dtype=np.float32)
+        return obs

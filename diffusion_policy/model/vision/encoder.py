@@ -12,10 +12,10 @@ Key design choices:
   - No ImageNet pretrained weights: robot images differ too much from ImageNet, training from scratch is better
 """
 
-import copy
 import torch
 import torch.nn as nn
 import torchvision
+import torchvision.transforms.functional as TF
 
 
 def get_resnet(name='resnet18', weights=None):
@@ -48,6 +48,22 @@ def replace_submodules(root_module, predicate, func):
     return root_module
 
 
+class RandomCenterCrop(nn.Module):
+    """Random crop during training, center crop during eval — no behaviour change at inference."""
+
+    def __init__(self, size):
+        super().__init__()
+        self.size = size  # (h, w)
+
+    def forward(self, x):
+        h, w = self.size
+        if self.training:
+            i, j, th, tw = torchvision.transforms.RandomCrop.get_params(x, (h, w))
+            return TF.crop(x, i, j, th, tw)
+        else:
+            return TF.center_crop(x, [h, w])
+
+
 class MultiImageObsEncoder(nn.Module):
     def __init__(self, shape_meta,
                  rgb_model_name='resnet18',
@@ -56,7 +72,8 @@ class MultiImageObsEncoder(nn.Module):
                  share_rgb_model=False,
                  imagenet_norm=False,
                  resize_shape=None,
-                 crop_shape=None):
+                 crop_shape=None,
+                 random_crop=False):
         super().__init__()
 
         rgb_keys = []
@@ -94,7 +111,10 @@ class MultiImageObsEncoder(nn.Module):
                     transforms.append(torchvision.transforms.Resize(size=(h, w)))
                 if crop_shape is not None:
                     h, w = crop_shape if not isinstance(crop_shape, dict) else crop_shape[key]
-                    transforms.append(torchvision.transforms.CenterCrop(size=(h, w)))
+                    if random_crop:
+                        transforms.append(RandomCenterCrop(size=(h, w)))
+                    else:
+                        transforms.append(torchvision.transforms.CenterCrop(size=(h, w)))
                 if imagenet_norm:
                     transforms.append(torchvision.transforms.Normalize(
                         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))

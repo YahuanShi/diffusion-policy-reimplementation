@@ -1,10 +1,14 @@
 """
 Image policy training workspace — trains image-conditioned diffusion policy using LeRobot format.
 
+Training uses the DDPM forward process (add noise) + MSE loss.
+Inference uses DDIM (16 deterministic steps) — see inference.py / eval.py.
+The trained weights are compatible with both; scheduler choice happens at load time.
+
 Training loop:
   Each epoch:
     for batch in dataloader:
-      1. Forward: policy.compute_loss(batch) → MSE(eps_theta, eps)
+      1. Forward: policy.compute_loss(batch) → MSE(ε_θ, ε)  [DDPM forward process]
       2. Backward: loss.backward() + gradient clipping (max_norm=1.0)
       3. Update: optimizer.step() + lr_scheduler.step() + ema.step()
     Periodically save checkpoints
@@ -41,6 +45,7 @@ def train_image(repo_id, root=None, episodes=None,
                 video_backend='pyav',
                 num_workers=2,
                 resize_shape=None,
+                crop_shape=None,
                 use_wandb=True,
                 wandb_run_name=None,
                 resume_checkpoint=None):
@@ -68,6 +73,8 @@ def train_image(repo_id, root=None, episodes=None,
         shape_meta, use_group_norm=use_group_norm,
         share_rgb_model=share_rgb_model,
         resize_shape=resize_shape,
+        crop_shape=crop_shape,
+        random_crop=(crop_shape is not None),
     )
     scheduler = DDPMScheduler(num_train_timesteps=100)
     policy = DiffusionUnetImagePolicy(
@@ -127,6 +134,7 @@ def train_image(repo_id, root=None, episodes=None,
                 'lr': lr,
                 'down_dims': list(down_dims),
                 'resize_shape': resize_shape,
+                'crop_shape': crop_shape,
                 'n_params': n_params,
                 'obs_keys': list(shape_meta['obs'].keys()),
                 'action_dim': shape_meta['action']['shape'][0],
@@ -187,10 +195,6 @@ def train_image(repo_id, root=None, episodes=None,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'normalizer_state_dict': normalizer.state_dict(),
                 'shape_meta': shape_meta,
-                'model_cfg': {
-                    'down_dims': list(down_dims),
-                    'diffusion_step_embed_dim': diffusion_step_embed_dim,
-                },
             }
             path = os.path.join(output_dir, f'checkpoint_epoch{epoch+1}.pt')
             torch.save(ckpt, path)
@@ -202,10 +206,6 @@ def train_image(repo_id, root=None, episodes=None,
         'policy_state_dict': policy.state_dict(),
         'normalizer_state_dict': normalizer.state_dict(),
         'shape_meta': shape_meta,
-        'model_cfg': {
-            'down_dims': list(down_dims),
-            'diffusion_step_embed_dim': diffusion_step_embed_dim,
-        },
     }, final_path)
     if use_wandb:
         wandb.finish()
