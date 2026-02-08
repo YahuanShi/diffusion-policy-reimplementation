@@ -12,8 +12,8 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
 - [ ] **Checkpoints** — Release trained checkpoints with download link
-- [ ] **Observation timestamp alignment** — `LeRobotImageDataset` currently uses `delta_timestamps = [0, 1/fps, ..., (H-1)/fps]` for both obs and action, meaning training obs covers `[t, t+1]` (current + future). Should use negative offsets `[-(To-1)/fps, ..., 0]` for obs (past → present) to match inference behavior where `obs_history = [t-To+1, ..., t]`. Fixing this requires retraining.
-- [ ] **Action extraction offset** — Currently `start = To` skips the first two predicted positions. After fixing the timestamp alignment above, validate whether `start = To - 1` (original paper convention) or `start = 0` is correct for the new alignment.
+- [x] **Observation timestamp alignment** — Fixed: obs uses `[-(To-1)/fps, ..., 0]`, action uses `[-(To-1)/fps, ..., (H-To)/fps]`. Training obs now covers past frames `[t-To+1, ..., t]`, matching inference obs_deque.
+- [x] **Action extraction offset** — Fixed: `start = To - 1` (execute from current time t). Consistent with original paper convention and the corrected timestamp alignment.
 - [ ] **Real environment evaluation** — `eval.py` currently only supports `--mock` mode with random observations. A proper evaluation requires a gym-compatible simulated environment (e.g., PushT, RoboSuite) or real robot rollout.
 
 ---
