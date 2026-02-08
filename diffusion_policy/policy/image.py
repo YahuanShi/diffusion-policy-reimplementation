@@ -32,18 +32,23 @@ from diffusion_policy.dataset.normalizer import LinearNormalizer
 
 
 class DiffusionUnetImagePolicy(nn.Module):
-    def __init__(self, obs_encoder: MultiImageObsEncoder,
-                 noise_scheduler: DDPMScheduler,
-                 shape_meta: dict,
-                 horizon, n_obs_steps, n_action_steps,
-                 num_inference_steps=None,
-                 diffusion_step_embed_dim=256,
-                 down_dims=(256, 512, 1024),
-                 kernel_size=5,
-                 n_groups=8,
-                 cond_predict_scale=True):
+    def __init__(
+        self,
+        obs_encoder: MultiImageObsEncoder,
+        noise_scheduler: DDPMScheduler,
+        shape_meta: dict,
+        horizon,
+        n_obs_steps,
+        n_action_steps,
+        num_inference_steps=None,
+        diffusion_step_embed_dim=256,
+        down_dims=(256, 512, 1024),
+        kernel_size=5,
+        n_groups=8,
+        cond_predict_scale=True,
+    ):
         super().__init__()
-        action_dim = shape_meta['action']['shape'][0]
+        action_dim = shape_meta["action"]["shape"][0]
         obs_feature_dim = obs_encoder.output_shape()[0]
 
         # global_cond_dim = obs_feature_dim × n_obs_steps
@@ -67,7 +72,9 @@ class DiffusionUnetImagePolicy(nn.Module):
         self.obs_feature_dim = obs_feature_dim
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
-        self.num_inference_steps = num_inference_steps or noise_scheduler.num_train_timesteps
+        self.num_inference_steps = (
+            num_inference_steps or noise_scheduler.num_train_timesteps
+        )
 
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
@@ -87,8 +94,10 @@ class DiffusionUnetImagePolicy(nn.Module):
         B = None
         flat_obs = {}
         low_dim_keys = set(
-            k for k, v in self.obs_encoder.shape_meta['obs'].items()
-            if v.get('type') == 'low_dim')
+            k
+            for k, v in self.obs_encoder.shape_meta["obs"].items()
+            if v.get("type") == "low_dim"
+        )
 
         for key, val in obs_dict.items():
             if B is None:
@@ -113,7 +122,7 @@ class DiffusionUnetImagePolicy(nn.Module):
 
         return trajectory
 
-    def compute_loss(self, batch):
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Training loss computation.
 
@@ -125,16 +134,16 @@ class DiffusionUnetImagePolicy(nn.Module):
           5. U-Net predicts noise: eps_theta = model(x_t, t, global_cond)
           6. Loss: MSE(eps_theta, eps)
         """
-        naction = self.normalizer['action'].normalize(batch['action'])
+        naction = self.normalizer["action"].normalize(batch["action"])
         B = naction.shape[0]
 
-        obs_dict = {k: v for k, v in batch.items() if k != 'action'}
+        obs_dict = {k: v for k, v in batch.items() if k != "action"}
         global_cond = self._encode_obs(obs_dict, self.n_obs_steps)
 
         noise = torch.randn_like(naction)
         timesteps = torch.randint(
-            0, self.noise_scheduler.num_train_timesteps, (B,),
-            device=naction.device).long()
+            0, self.noise_scheduler.num_train_timesteps, (B,), device=naction.device
+        ).long()
 
         noisy_action = self.noise_scheduler.add_noise(naction, noise, timesteps)
         eps_pred = self.model(noisy_action, timesteps, global_cond=global_cond)
@@ -143,7 +152,7 @@ class DiffusionUnetImagePolicy(nn.Module):
         return loss
 
     @torch.no_grad()
-    def predict_action(self, obs_dict):
+    def predict_action(self, obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Inference: generate action sequence from noise.
 
@@ -166,7 +175,7 @@ class DiffusionUnetImagePolicy(nn.Module):
         shape = (B, self.horizon, self.action_dim)
         naction_pred = self.conditional_sample(shape, global_cond)
 
-        action_pred = self.normalizer['action'].unnormalize(naction_pred)
+        action_pred = self.normalizer["action"].unnormalize(naction_pred)
 
         start = To
         end = start + self.n_action_steps

@@ -45,12 +45,19 @@ def run_episode(env, policy, shape_meta, n_obs_steps, n_action_steps, max_steps=
             total_reward += reward
             step += 1
 
-    return {'total_reward': total_reward, 'steps': step, 'done': done}
+    return {"total_reward": total_reward, "steps": step, "done": done}
 
 
 class EvalRunner:
-    def __init__(self, env_factory, shape_meta, n_test=50, max_steps=400,
-                 n_obs_steps=2, n_action_steps=8):
+    def __init__(
+        self,
+        env_factory,
+        shape_meta,
+        n_test=50,
+        max_steps=400,
+        n_obs_steps=2,
+        n_action_steps=8,
+    ):
         self.env_factory = env_factory
         self.shape_meta = shape_meta
         self.n_test = n_test
@@ -63,21 +70,23 @@ class EvalRunner:
         for _ in range(self.n_test):
             env = self.env_factory()
             result = run_episode(
-                env, policy,
+                env,
+                policy,
                 shape_meta=self.shape_meta,
                 n_obs_steps=self.n_obs_steps,
                 n_action_steps=self.n_action_steps,
-                max_steps=self.max_steps)
+                max_steps=self.max_steps,
+            )
             results.append(result)
 
-        rewards = [r['total_reward'] for r in results]
+        rewards = [r["total_reward"] for r in results]
         return {
-            'mean_reward': np.mean(rewards),
-            'std_reward': np.std(rewards),
-            'max_reward': np.max(rewards),
-            'min_reward': np.min(rewards),
-            'n_episodes': len(results),
-            'results': results,
+            "mean_reward": np.mean(rewards),
+            "std_reward": np.std(rewards),
+            "max_reward": np.max(rewards),
+            "min_reward": np.min(rewards),
+            "n_episodes": len(results),
+            "results": results,
         }
 
 
@@ -87,7 +96,7 @@ class MockEnv:
     def __init__(self, shape_meta, episode_len=50):
         self.shape_meta = shape_meta
         self.episode_len = episode_len
-        self.action_dim = shape_meta['action']['shape'][0]
+        self.action_dim = shape_meta["action"]["shape"][0]
         self._step = 0
 
     def reset(self):
@@ -97,15 +106,15 @@ class MockEnv:
     def step(self, action):
         self._step += 1
         obs = self._random_obs()
-        reward = float(-np.sum(action ** 2) * 0.01)
+        reward = float(-np.sum(action**2) * 0.01)
         done = self._step >= self.episode_len
         return obs, reward, done, {}
 
     def _random_obs(self):
         obs = {}
-        for key, attr in self.shape_meta['obs'].items():
-            shape = tuple(attr['shape'])
-            if attr.get('type') == 'rgb':
+        for key, attr in self.shape_meta["obs"].items():
+            shape = tuple(attr["shape"])
+            if attr.get("type") == "rgb":
                 obs[key] = np.random.rand(*shape).astype(np.float32)
             else:
                 obs[key] = np.zeros(shape, dtype=np.float32)

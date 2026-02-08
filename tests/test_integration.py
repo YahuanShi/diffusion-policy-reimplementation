@@ -16,11 +16,11 @@ B, TO, H = 4, 2, 16
 
 def test_image_policy():
     shape_meta = {
-        'obs': {
-            'image': {'shape': (3, 64, 64), 'type': 'rgb'},
-            'agent_pos': {'shape': (2,), 'type': 'low_dim'},
+        "obs": {
+            "image": {"shape": (3, 64, 64), "type": "rgb"},
+            "agent_pos": {"shape": (2,), "type": "low_dim"},
         },
-        'action': {'shape': (2,)},
+        "action": {"shape": (2,)},
     }
 
     encoder = MultiImageObsEncoder(shape_meta, use_group_norm=True)
@@ -38,13 +38,13 @@ def test_image_policy():
     )
 
     normalizer = LinearNormalizer()
-    normalizer.fit({'action': torch.randn(50, 2)})
+    normalizer.fit({"action": torch.randn(50, 2)})
     policy.set_normalizer(normalizer)
 
     batch = {
-        'image': torch.randn(B, H, 3, 64, 64),
-        'agent_pos': torch.randn(B, H, 2),
-        'action': torch.randn(B, H, 2),
+        "image": torch.randn(B, H, 3, 64, 64),
+        "agent_pos": torch.randn(B, H, 2),
+        "action": torch.randn(B, H, 2),
     }
 
     policy.train()
@@ -53,7 +53,10 @@ def test_image_policy():
     assert loss.item() > 0
 
     policy.eval()
-    obs_dict = {'image': batch['image'][:1, :TO], 'agent_pos': batch['agent_pos'][:1, :TO]}
+    obs_dict = {
+        "image": batch["image"][:1, :TO],
+        "agent_pos": batch["agent_pos"][:1, :TO],
+    }
     with torch.no_grad():
         actions = policy.predict_action(obs_dict)
     assert actions.shape == (1, 8, 2)
@@ -70,7 +73,7 @@ def test_ema():
     assert ema.decay > 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_image_policy()
     test_ema()
     print("All integration tests passed.")

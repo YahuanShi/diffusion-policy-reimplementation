@@ -16,6 +16,9 @@ uv venv "$ENV_NAME" --python 3.10
 echo "Installing dependencies ..."
 UV_PROJECT_ENVIRONMENT="$ENV_NAME" uv sync --extra dev
 
+echo "Installing pre-commit hooks ..."
+"$ENV_NAME/bin/pre-commit" install
+
 echo ""
 echo "Done. Activate with:"
 echo "  source $ENV_NAME/bin/activate"

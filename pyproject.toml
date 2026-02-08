@@ -27,6 +27,10 @@ dev = [
     "pytest",
 ]
 
+[project.scripts]
+dp-train = "train:main"
+dp-eval  = "eval:main"
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu118", marker = "platform_system == 'Linux'" },
@@ -43,6 +47,11 @@ explicit = true
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = [

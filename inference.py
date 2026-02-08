@@ -69,6 +69,7 @@ MAX_JOINT_VEL = 0.8  # rad/s safety clamp
 
 # ══════════════════════════════ Gripper ══════════════════════════════
 
+
 class WeissCRGGripper:
     """
     Weiss CRG 30-050 gripper driver via DC-IOLink USB adapter.
@@ -82,6 +83,7 @@ class WeissCRGGripper:
 
     def __init__(self, port=GRIPPER_PORT, baudrate=GRIPPER_BAUDRATE):
         import serial as _serial
+
         self._lock = threading.Lock()
         self._ser = _serial.Serial(port=port, baudrate=baudrate, timeout=0.2)
         self._position_mm = 0.0
@@ -134,6 +136,7 @@ class WeissCRGGripper:
         def enc(mm):
             v = int(mm * 100)
             return f"[{(v >> 8) & 0xFF:02x},{v & 0xFF:02x}]"
+
         self._send(f"SETPARAM(96, 2, {enc(open_mm)})", 0.3)
         self._send(f"SETPARAM(96, 1, {enc(close_mm)})", 0.3)
         self._send("SETPARAM(96, 3, [64])", 0.3)
@@ -173,17 +176,19 @@ class WeissCRGGripper:
 
 # ══════════════════════════════ Camera ══════════════════════════════
 
+
 def _center_crop_resize(bgr, size=IMAGE_SIZE):
     h, w = bgr.shape[:2]
     s = min(h, w)
     y0, x0 = (h - s) // 2, (w - s) // 2
-    crop = bgr[y0:y0+s, x0:x0+s]
+    crop = bgr[y0 : y0 + s, x0 : x0 + s]
     resized = cv2.resize(crop, (size, size), interpolation=cv2.INTER_LINEAR)
     return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
 
 def _start_realsense(serial_num):
     import pyrealsense2 as rs
+
     pipeline = rs.pipeline()
     cfg = rs.config()
     cfg.enable_device(serial_num)
@@ -199,19 +204,25 @@ def _grab_frame(pipeline, retries=3):
         color = frames.get_color_frame()
         if color:
             return np.asanyarray(color.get_data())
-        log.warning(f"[Camera] No frame, retry {attempt+1}/{retries}")
+        log.warning(f"[Camera] No frame, retry {attempt + 1}/{retries}")
     raise RuntimeError("Camera failed after retries")
 
 
 # ══════════════════════════════ Robot ══════════════════════════════
 
+
 class UR3eRobot:
     """UR3e robot + Weiss gripper + dual RealSense cameras."""
 
-    def __init__(self, robot_ip, frequency=10, use_gripper=True,
-                 cam_serial_exterior=CAM_SERIAL_EXTERIOR,
-                 cam_serial_wrist=CAM_SERIAL_WRIST,
-                 image_size=IMAGE_SIZE):
+    def __init__(
+        self,
+        robot_ip,
+        frequency=10,
+        use_gripper=True,
+        cam_serial_exterior=CAM_SERIAL_EXTERIOR,
+        cam_serial_wrist=CAM_SERIAL_WRIST,
+        image_size=IMAGE_SIZE,
+    ):
         import rtde_control
         import rtde_receive
 
@@ -238,6 +249,7 @@ class UR3eRobot:
 
     def home(self):
         import contextlib
+
         with contextlib.suppress(Exception):
             self._rtde_c.servoStop()
         time.sleep(0.2)
@@ -265,9 +277,9 @@ class UR3eRobot:
         wrist_rgb = _center_crop_resize(wrist_bgr, self._image_size)
 
         return {
-            'state': state,
-            'exterior_rgb': exterior_rgb,
-            'wrist_rgb': wrist_rgb,
+            "state": state,
+            "exterior_rgb": exterior_rgb,
+            "wrist_rgb": wrist_rgb,
         }
 
     def apply_action(self, action):
@@ -283,12 +295,11 @@ class UR3eRobot:
 
         try:
             self._rtde_c.servoJ(
-                cmd_rad.tolist(), 0, 0,
-                SERVO_J_TIME, SERVO_J_LOOKAHEAD, SERVO_J_GAIN)
+                cmd_rad.tolist(), 0, 0, SERVO_J_TIME, SERVO_J_LOOKAHEAD, SERVO_J_GAIN
+            )
         except Exception as e:
             log.warning(f"[UR3e] servoJ error: {e}")
-            self._last_cmd_rad = np.array(
-                self._rtde_r.getActualQ(), dtype=np.float32)
+            self._last_cmd_rad = np.array(self._rtde_r.getActualQ(), dtype=np.float32)
 
         if self._gripper:
             want_open = float(action[6]) < 0.5
@@ -316,15 +327,19 @@ class UR3eRobot:
 
 # ══════════════════════════════ Policy Loader ══════════════════════════════
 
-def load_policy(checkpoint_path, device='cuda', resize_shape=None, num_inference_steps=16):
+
+def load_policy(
+    checkpoint_path, device="cuda", resize_shape=None, num_inference_steps=16
+):
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    shape_meta = payload['shape_meta']
+    shape_meta = payload["shape_meta"]
 
     normalizer = LinearNormalizer()
-    normalizer.load_state_dict(payload['normalizer_state_dict'])
+    normalizer.load_state_dict(payload["normalizer_state_dict"])
 
     encoder = MultiImageObsEncoder(
-        shape_meta, use_group_norm=True,
+        shape_meta,
+        use_group_norm=True,
         resize_shape=resize_shape,
     )
     # DDIM at inference: 16 deterministic steps instead of 100 DDPM steps (~6x faster)
@@ -341,7 +356,7 @@ def load_policy(checkpoint_path, device='cuda', resize_shape=None, num_inference
         down_dims=[256, 512, 1024],
     )
     policy.set_normalizer(normalizer)
-    policy.load_state_dict(payload['policy_state_dict'])
+    policy.load_state_dict(payload["policy_state_dict"])
     policy.to(device)
     policy.eval()
     return policy, shape_meta
@@ -349,35 +364,45 @@ def load_policy(checkpoint_path, device='cuda', resize_shape=None, num_inference
 
 def make_vis_frame(obs, action, step, inference_ms):
     """Side-by-side exterior + wrist camera view with status overlay."""
-    ext = cv2.cvtColor(obs['exterior_rgb'], cv2.COLOR_RGB2BGR)
-    wrist = cv2.cvtColor(obs['wrist_rgb'], cv2.COLOR_RGB2BGR)
+    ext = cv2.cvtColor(obs["exterior_rgb"], cv2.COLOR_RGB2BGR)
+    wrist = cv2.cvtColor(obs["wrist_rgb"], cv2.COLOR_RGB2BGR)
     disp = 320
     frame = np.concatenate(
-        [cv2.resize(ext, (disp, disp)), cv2.resize(wrist, (disp, disp))], axis=1)
+        [cv2.resize(ext, (disp, disp)), cv2.resize(wrist, (disp, disp))], axis=1
+    )
     lines = [
-        f'Step: {step}',
-        f'Infer: {inference_ms:.0f}ms',
-        f'Gripper: {"open" if action[6] < 0.5 else "close"}',
+        f"Step: {step}",
+        f"Infer: {inference_ms:.0f}ms",
+        f"Gripper: {'open' if action[6] < 0.5 else 'close'}",
         "q / ESC — stop",
     ]
     for i, txt in enumerate(lines):
-        cv2.putText(frame, txt, (10, 22 + i * 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            txt,
+            (10, 22 + i * 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     return frame
 
 
 # ══════════════════════════════ Inference Loop ══════════════════════════════
 
-def build_obs_dict(obs_history, device='cuda'):
+
+def build_obs_dict(obs_history, device="cuda"):
     """
     Convert raw observation history to policy input tensors.
 
     obs_history: deque of dicts from UR3eRobot.get_obs(), length = n_obs_steps
     Returns: obs_dict with (1, n_obs_steps, ...) tensors, keys matching training format.
     """
-    exterior_stack = np.stack([o['exterior_rgb'] for o in obs_history])  # (T, H, W, 3)
-    wrist_stack = np.stack([o['wrist_rgb'] for o in obs_history])
-    state_stack = np.stack([o['state'] for o in obs_history])  # (T, state_dim)
+    exterior_stack = np.stack([o["exterior_rgb"] for o in obs_history])  # (T, H, W, 3)
+    wrist_stack = np.stack([o["wrist_rgb"] for o in obs_history])
+    state_stack = np.stack([o["state"] for o in obs_history])  # (T, state_dim)
 
     # HWC uint8 -> CHW float32 [0, 1]
     ext_t = torch.from_numpy(exterior_stack).float().permute(0, 3, 1, 2) / 255.0
@@ -385,17 +410,23 @@ def build_obs_dict(obs_history, device='cuda'):
     state_t = torch.from_numpy(state_stack).float()
 
     return {
-        'observation_images_exterior_image_1_left': ext_t.unsqueeze(0).to(device),
-        'observation_images_wrist_image_left': wrist_t.unsqueeze(0).to(device),
-        'observation_state': state_t.unsqueeze(0).to(device),
+        "observation_images_exterior_image_1_left": ext_t.unsqueeze(0).to(device),
+        "observation_images_wrist_image_left": wrist_t.unsqueeze(0).to(device),
+        "observation_state": state_t.unsqueeze(0).to(device),
     }
 
 
-def run_inference(policy, robot, device='cuda',
-                  n_obs_steps=2, n_action_steps=8,
-                  steps_per_inference=6,
-                  max_steps=500, frequency=10,
-                  dry_run=False):
+def run_inference(
+    policy,
+    robot,
+    device="cuda",
+    n_obs_steps=2,
+    n_action_steps=8,
+    steps_per_inference=6,
+    max_steps=500,
+    frequency=10,
+    dry_run=False,
+):
     dt = 1.0 / frequency
     frame_latency = 1.0 / 30  # camera runs at 30 fps
     obs_history = deque(maxlen=n_obs_steps)
@@ -410,8 +441,10 @@ def run_inference(policy, robot, device='cuda',
     log.info("Warming up policy inference...")
     with torch.no_grad():
         policy.predict_action(build_obs_dict(obs_history, device))
-    log.info(f"Ready. freq={frequency}Hz  steps_per_inference={steps_per_inference}  "
-             f"max_steps={max_steps}  dry_run={dry_run}")
+    log.info(
+        f"Ready. freq={frequency}Hz  steps_per_inference={steps_per_inference}  "
+        f"max_steps={max_steps}  dry_run={dry_run}"
+    )
 
     step = 0
     iter_idx = 0
@@ -444,9 +477,12 @@ def run_inference(policy, robot, device='cuda',
                 obs_history.append(obs)
 
                 # Visualize — non-blocking, matches model input (same crop+resize)
-                cv2.imshow('Diffusion Policy', make_vis_frame(obs, actions[i], step, inference_ms))
+                cv2.imshow(
+                    "Diffusion Policy",
+                    make_vis_frame(obs, actions[i], step, inference_ms),
+                )
                 key = cv2.pollKey()
-                if key in (ord('q'), 27):  # q or ESC
+                if key in (ord("q"), 27):  # q or ESC
                     raise KeyboardInterrupt
 
                 step += 1
@@ -466,36 +502,58 @@ def run_inference(policy, robot, device='cuda',
 
 # ══════════════════════════════ Main ══════════════════════════════
 
+
 def main():
-    parser = argparse.ArgumentParser(description='UR3e real robot inference')
-    parser.add_argument('--checkpoint', required=True)
-    parser.add_argument('--robot_ip', required=True)
-    parser.add_argument('--device', default='cuda')
-    parser.add_argument('--frequency', type=int, default=10)
-    parser.add_argument('--steps_per_inference', type=int, default=6,
-                        help='Actions to execute per inference cycle (default: 6)')
-    parser.add_argument('--num_inference_steps', type=int, default=16,
-                        help='DDIM denoising steps at inference (default: 16)')
-    parser.add_argument('--max_steps', type=int, default=500)
-    parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'))
-    parser.add_argument('--no_gripper', action='store_true')
-    parser.add_argument('--dry_run', action='store_true',
-                        help='Run full pipeline without sending robot commands')
-    parser.add_argument('--cam_exterior', default=CAM_SERIAL_EXTERIOR,
-                        help='RealSense serial number for exterior camera')
-    parser.add_argument('--cam_wrist', default=CAM_SERIAL_WRIST,
-                        help='RealSense serial number for wrist camera')
+    parser = argparse.ArgumentParser(description="UR3e real robot inference")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--robot_ip", required=True)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--frequency", type=int, default=10)
+    parser.add_argument(
+        "--steps_per_inference",
+        type=int,
+        default=6,
+        help="Actions to execute per inference cycle (default: 6)",
+    )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=16,
+        help="DDIM denoising steps at inference (default: 16)",
+    )
+    parser.add_argument("--max_steps", type=int, default=500)
+    parser.add_argument("--resize", type=int, nargs=2, default=None, metavar=("H", "W"))
+    parser.add_argument("--no_gripper", action="store_true")
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        help="Run full pipeline without sending robot commands",
+    )
+    parser.add_argument(
+        "--cam_exterior",
+        default=CAM_SERIAL_EXTERIOR,
+        help="RealSense serial number for exterior camera",
+    )
+    parser.add_argument(
+        "--cam_wrist",
+        default=CAM_SERIAL_WRIST,
+        help="RealSense serial number for wrist camera",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, force=True)
 
     log.info("Loading policy...")
     policy, shape_meta = load_policy(
-        args.checkpoint, args.device,
+        args.checkpoint,
+        args.device,
         resize_shape=tuple(args.resize) if args.resize else None,
-        num_inference_steps=args.num_inference_steps)
-    log.info(f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}, "
-             f"DDIM steps: {args.num_inference_steps}")
+        num_inference_steps=args.num_inference_steps,
+    )
+    log.info(
+        f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}, "
+        f"DDIM steps: {args.num_inference_steps}"
+    )
 
     log.info(f"Connecting to UR3e at {args.robot_ip}...")
     robot = UR3eRobot(
@@ -519,5 +577,5 @@ def main():
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

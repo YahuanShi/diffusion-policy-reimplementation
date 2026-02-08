@@ -19,15 +19,16 @@ from diffusion_policy.policy.image import DiffusionUnetImagePolicy
 from evaluation.runner import EvalRunner, MockEnv
 
 
-def load_policy(checkpoint_path, device='cpu', resize_shape=None):
+def load_policy(checkpoint_path, device="cpu", resize_shape=None):
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    shape_meta = payload['shape_meta']
+    shape_meta = payload["shape_meta"]
 
     normalizer = LinearNormalizer()
-    normalizer.load_state_dict(payload['normalizer_state_dict'])
+    normalizer.load_state_dict(payload["normalizer_state_dict"])
 
     encoder = MultiImageObsEncoder(
-        shape_meta, use_group_norm=True,
+        shape_meta,
+        use_group_norm=True,
         resize_shape=resize_shape,
     )
     scheduler = DDIMScheduler(num_train_timesteps=100)
@@ -43,31 +44,35 @@ def load_policy(checkpoint_path, device='cpu', resize_shape=None):
         down_dims=[256, 512, 1024],
     )
     policy.set_normalizer(normalizer)
-    policy.load_state_dict(payload['policy_state_dict'])
+    policy.load_state_dict(payload["policy_state_dict"])
     policy.to(device)
     policy.eval()
     return policy, shape_meta
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', required=True)
-    parser.add_argument('--device', default='cpu')
-    parser.add_argument('--n_test', type=int, default=50)
-    parser.add_argument('--mock', action='store_true')
-    parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('H', 'W'))
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--n_test", type=int, default=50)
+    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--resize", type=int, nargs=2, default=None, metavar=("H", "W"))
     args = parser.parse_args()
 
     policy, shape_meta = load_policy(
-        args.checkpoint, args.device,
-        resize_shape=tuple(args.resize) if args.resize else None)
+        args.checkpoint,
+        args.device,
+        resize_shape=tuple(args.resize) if args.resize else None,
+    )
 
     if args.mock:
+
         def env_factory():
             return MockEnv(shape_meta=shape_meta)
     else:
         raise NotImplementedError(
-            "Real env evaluation requires a gym environment. Use --mock for testing.")
+            "Real env evaluation requires a gym environment. Use --mock for testing."
+        )
 
     runner = EvalRunner(
         env_factory=env_factory,
@@ -79,3 +84,7 @@ if __name__ == '__main__':
     result = runner.run(policy)
     print(f"mean_reward: {result['mean_reward']:.4f} +/- {result['std_reward']:.4f}")
     print(f"max_reward: {result['max_reward']:.4f}")
+
+
+if __name__ == "__main__":
+    main()
