@@ -34,10 +34,11 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--output_dir', default='outputs')
     parser.add_argument('--checkpoint_every', type=int, default=100)
+    parser.add_argument('--save_every_steps', type=int, default=5000,
+                        help='Save a checkpoint every N gradient steps (0 to disable)')
     parser.add_argument('--resume', default=None, help='Path to checkpoint to resume training from')
 
-    # Wandb (enabled by default, use --no_wandb to disable)
-    parser.add_argument('--no_wandb', action='store_true', help='Disable wandb logging')
+    # Wandb
     parser.add_argument('--wandb_run_name', default=None, help='Wandb run name')
     args = parser.parse_args()
 
@@ -57,10 +58,10 @@ if __name__ == '__main__':
         lr=args.lr,
         output_dir=args.output_dir,
         checkpoint_every=args.checkpoint_every,
+        save_every_steps=args.save_every_steps,
         num_workers=args.num_workers,
         resize_shape=tuple(args.resize) if args.resize else None,
         crop_shape=tuple(args.crop) if args.crop else None,
-        use_wandb=not args.no_wandb,
         wandb_run_name=args.wandb_run_name,
         resume_checkpoint=args.resume,
     )
