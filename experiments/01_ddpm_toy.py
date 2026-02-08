@@ -28,8 +28,11 @@ def main():
     H = 4
     scheduler = DDPMScheduler(num_train_timesteps=100)
     model = ConditionalUnet1D(
-        input_dim=2, global_cond_dim=None,
-        down_dims=[32, 64], diffusion_step_embed_dim=64)
+        input_dim=2,
+        global_cond_dim=None,
+        down_dims=[32, 64],
+        diffusion_step_embed_dim=64,
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params:,}")
@@ -67,5 +70,5 @@ def main():
     print("Saved experiments/toy_samples.png")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

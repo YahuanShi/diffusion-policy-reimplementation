@@ -14,6 +14,9 @@ __pycache__/
 *.pyo
 *.egg-info/
 
+# Model weights (use wandb artifacts or releases instead)
+*.pt
+
 # Logs
 *.log
 

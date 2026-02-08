@@ -21,28 +21,41 @@ from diffusion_policy.dataset.normalizer import LinearNormalizer
 
 def _safe_key(k):
     """observation.images.cam → observation_images_cam (ModuleDict forbids dots in key names)"""
-    return k.replace('.', '_')
+    return k.replace(".", "_")
 
 
 class LeRobotImageDataset(Dataset):
     """Wraps LeRobotDataset, output format directly compatible with DiffusionUnetImagePolicy.compute_loss()"""
 
-    def __init__(self, repo_id, root=None, episodes=None,
-                 horizon=16, n_obs_steps=2,
-                 image_keys=None, state_key='observation.state',
-                 action_key='action',
-                 video_backend='pyav',
-                 image_transforms=None):
-        meta_ds = LeRobotDataset(repo_id=repo_id, root=root, episodes=episodes,
-                                 video_backend=video_backend)
+    def __init__(
+        self,
+        repo_id,
+        root=None,
+        episodes=None,
+        horizon=16,
+        n_obs_steps=2,
+        image_keys=None,
+        state_key="observation.state",
+        action_key="action",
+        video_backend="pyav",
+        image_transforms=None,
+    ):
+        meta_ds = LeRobotDataset(
+            repo_id=repo_id, root=root, episodes=episodes, video_backend=video_backend
+        )
         fps = meta_ds.fps
         features = meta_ds.features
 
         if image_keys is None:
             image_keys = sorted(
-                k for k, v in features.items()
-                if v.get('dtype') == 'video' or
-                (isinstance(v.get('shape', ()), (list, tuple)) and len(v['shape']) == 3))
+                k
+                for k, v in features.items()
+                if v.get("dtype") == "video"
+                or (
+                    isinstance(v.get("shape", ()), (list, tuple))
+                    and len(v["shape"]) == 3
+                )
+            )
 
         ts = [i / fps for i in range(horizon)]
         dt = {action_key: ts}
@@ -54,7 +67,9 @@ class LeRobotImageDataset(Dataset):
         del meta_ds
 
         self.ds = LeRobotDataset(
-            repo_id=repo_id, root=root, episodes=episodes,
+            repo_id=repo_id,
+            root=root,
+            episodes=episodes,
             video_backend=video_backend,
             image_transforms=image_transforms,
             delta_timestamps=dt,
@@ -72,24 +87,24 @@ class LeRobotImageDataset(Dataset):
         obs_meta = {}
         for key in self.image_keys:
             feat = self.ds.features[key]
-            shape = tuple(feat['shape'])
+            shape = tuple(feat["shape"])
             if len(shape) == 3:
                 h, w, c = shape
-                obs_meta[_safe_key(key)] = {'shape': (c, h, w), 'type': 'rgb'}
+                obs_meta[_safe_key(key)] = {"shape": (c, h, w), "type": "rgb"}
             else:
-                obs_meta[_safe_key(key)] = {'shape': shape, 'type': 'rgb'}
+                obs_meta[_safe_key(key)] = {"shape": shape, "type": "rgb"}
 
         if self.state_key in self.ds.features:
             feat = self.ds.features[self.state_key]
             obs_meta[_safe_key(self.state_key)] = {
-                'shape': tuple(feat['shape']),
-                'type': 'low_dim',
+                "shape": tuple(feat["shape"]),
+                "type": "low_dim",
             }
 
         action_feat = self.ds.features[self.action_key]
         return {
-            'obs': obs_meta,
-            'action': {'shape': tuple(action_feat['shape'])},
+            "obs": obs_meta,
+            "action": {"shape": tuple(action_feat["shape"])},
         }
 
     @property
@@ -104,7 +119,7 @@ class LeRobotImageDataset(Dataset):
         out = {}
         for key in self.obs_keys:
             out[_safe_key(key)] = item[key]
-        out['action'] = item[self.action_key]
+        out["action"] = item[self.action_key]
         return out
 
     def get_normalizer(self) -> LinearNormalizer:
@@ -112,7 +127,7 @@ class LeRobotImageDataset(Dataset):
         hf = self.ds.hf_dataset
 
         # Column access is orders of magnitude faster than row-by-row iteration
-        stats = {'action': torch.tensor(hf[self.action_key])}
+        stats = {"action": torch.tensor(hf[self.action_key])}
         if self.state_key in self.ds.features:
             stats[_safe_key(self.state_key)] = torch.tensor(hf[self.state_key])
 

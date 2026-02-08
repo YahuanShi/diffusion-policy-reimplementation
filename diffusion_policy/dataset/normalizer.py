@@ -24,7 +24,7 @@ class SingleFieldNormalizer:
         self.scale = None
         self.offset = None
 
-    def fit(self, data, mode='limits', output_min=-1.0, output_max=1.0, eps=1e-6):
+    def fit(self, data, mode="limits", output_min=-1.0, output_max=1.0, eps=1e-6):
         if isinstance(data, torch.Tensor):
             data = data.float()
         else:
@@ -32,14 +32,14 @@ class SingleFieldNormalizer:
 
         flat = data.reshape(-1, data.shape[-1])
 
-        if mode == 'limits':
+        if mode == "limits":
             input_min = flat.min(dim=0).values
             input_max = flat.max(dim=0).values
             input_range = input_max - input_min
             input_range = torch.clamp(input_range, min=eps)
             scale = (output_max - output_min) / input_range
             offset = output_min - scale * input_min
-        elif mode == 'gaussian':
+        elif mode == "gaussian":
             mean = flat.mean(dim=0)
             std = flat.std(dim=0)
             std = torch.clamp(std, min=eps)
@@ -63,18 +63,18 @@ class SingleFieldNormalizer:
         return (x - offset) / scale
 
     def state_dict(self):
-        return {'scale': self.scale, 'offset': self.offset}
+        return {"scale": self.scale, "offset": self.offset}
 
     def load_state_dict(self, d):
-        self.scale = d['scale']
-        self.offset = d['offset']
+        self.scale = d["scale"]
+        self.offset = d["offset"]
 
 
 class LinearNormalizer:
     def __init__(self):
         self._normalizers = {}
 
-    def fit(self, data_dict, mode='limits', **kwargs):
+    def fit(self, data_dict, mode="limits", **kwargs):
         for key, data in data_dict.items():
             n = SingleFieldNormalizer()
             n.fit(data, mode=mode, **kwargs)
@@ -100,11 +100,11 @@ class LinearNormalizer:
             self._normalizers[k] = n
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Test SingleFieldNormalizer
     data = torch.tensor([[0.0, 10.0], [5.0, 20.0], [10.0, 30.0]])
     n = SingleFieldNormalizer()
-    n.fit(data, mode='limits')
+    n.fit(data, mode="limits")
     normed = n.normalize(data)
     print(f"limits: min={normed.min().item():.1f}, max={normed.max().item():.1f}")
     assert torch.allclose(normed.min(dim=0).values, torch.tensor([-1.0, -1.0]))
@@ -115,22 +115,24 @@ if __name__ == '__main__':
 
     # Test gaussian mode
     n2 = SingleFieldNormalizer()
-    n2.fit(data, mode='gaussian')
+    n2.fit(data, mode="gaussian")
     normed2 = n2.normalize(data)
-    print(f"gaussian: mean={normed2.mean(dim=0).tolist()}, std={normed2.std(dim=0).tolist()}")
+    print(
+        f"gaussian: mean={normed2.mean(dim=0).tolist()}, std={normed2.std(dim=0).tolist()}"
+    )
 
     # Test LinearNormalizer
     ln = LinearNormalizer()
-    ln.fit({'action': data, 'obs': torch.randn(100, 4)})
-    assert 'action' in ln
-    out = ln['action'].normalize(data)
+    ln.fit({"action": data, "obs": torch.randn(100, 4)})
+    assert "action" in ln
+    out = ln["action"].normalize(data)
     assert torch.allclose(out.min(dim=0).values, torch.tensor([-1.0, -1.0]))
 
     # Test state_dict round-trip
     sd = ln.state_dict()
     ln2 = LinearNormalizer()
     ln2.load_state_dict(sd)
-    out2 = ln2['action'].normalize(data)
+    out2 = ln2["action"].normalize(data)
     assert torch.allclose(out, out2)
 
     print("LinearNormalizer OK")
