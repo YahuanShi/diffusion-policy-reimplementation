@@ -29,7 +29,7 @@ This is a **from-scratch reimplementation** of Diffusion Policy, not a fork. Eve
 | **Code origin** | Complete framework (~20k LOC) | From-scratch rewrite (~2k LOC) |
 | **Config system** | Hydra + YAML (dozens of config files) | Plain argparse (one `train.py`) |
 | **Data format** | Zarr only | LeRobot v3 (modern standard) |
-| **Wandb** | Deeply coupled, required | Enabled by default, `--no_wandb` to disable |
+| **Wandb** | Deeply coupled, required | Always enabled (project: `Diffusion-Policy`) |
 | **State normalization** | Action only | Action + state (inspired by OpenPI) |
 | **Comments** | Minimal | Learning-note style: explains the *why* behind each design |
 | **Environment** | conda + pip + manual setup | `bash setup.sh` one-click (uv) |
@@ -166,7 +166,8 @@ python train.py \
 - `--resize H W` — resize images to H×W before the encoder (saves GPU memory)
 - `--crop H W` — random crop to H×W during training, center crop at eval (data augmentation)
 
-Wandb logging is enabled by default (project: `Diffusion-Policy`). Use `--no_wandb` to disable, or `--wandb_run_name` to set a custom run name.
+Wandb logging is always enabled (project: `Diffusion-Policy`). Use `--wandb_run_name` to set a custom run name.
+Checkpoints are saved every `--save_every_steps` gradient steps (default: 5000) and every `--checkpoint_every` epochs (default: 100).
 
 ### Resume Training
 ```bash

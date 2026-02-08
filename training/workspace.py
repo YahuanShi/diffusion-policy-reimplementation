@@ -11,7 +11,7 @@ Training loop:
       1. Forward: policy.compute_loss(batch) → MSE(ε_θ, ε)  [DDPM forward process]
       2. Backward: loss.backward() + gradient clipping (max_norm=1.0)
       3. Update: optimizer.step() + lr_scheduler.step() + ema.step()
-    Periodically save checkpoints
+  Checkpoints saved every save_every_steps steps and every checkpoint_every epochs.
 
 Usage:
   python train.py --repo_id lerobot/pusht --epochs 3000
@@ -21,6 +21,7 @@ Usage:
 import os
 import time
 import torch
+import wandb
 import numpy as np
 from torch.utils.data import DataLoader
 
@@ -37,6 +38,7 @@ def train_image(repo_id, root=None, episodes=None,
                 num_inference_steps=100,
                 lr=1e-4, lr_warmup_steps=500,
                 ema_power=2/3, checkpoint_every=100,
+                save_every_steps=5000,
                 output_dir='outputs',
                 image_keys=None, state_key='observation.state',
                 use_group_norm=True, share_rgb_model=False,
@@ -46,7 +48,6 @@ def train_image(repo_id, root=None, episodes=None,
                 num_workers=2,
                 resize_shape=None,
                 crop_shape=None,
-                use_wandb=True,
                 wandb_run_name=None,
                 resume_checkpoint=None):
 
@@ -116,31 +117,29 @@ def train_image(repo_id, root=None, episodes=None,
 
     print(f"Training for {num_epochs} epochs ({total_steps} steps)")
 
-    if use_wandb:
-        import wandb
-        wandb.init(
-            project='Diffusion-Policy',
-            name=wandb_run_name,
-            config={
-                'mode': 'image',
-                'repo_id': repo_id,
-                'num_episodes': dataset.ds.num_episodes,
-                'num_frames': len(dataset),
-                'batch_size': batch_size,
-                'num_epochs': num_epochs,
-                'horizon': horizon,
-                'n_obs_steps': n_obs_steps,
-                'n_action_steps': n_action_steps,
-                'lr': lr,
-                'down_dims': list(down_dims),
-                'resize_shape': resize_shape,
-                'crop_shape': crop_shape,
-                'n_params': n_params,
-                'obs_keys': list(shape_meta['obs'].keys()),
-                'action_dim': shape_meta['action']['shape'][0],
-            },
-            resume='allow',
-        )
+    wandb.init(
+        project='Diffusion-Policy',
+        name=wandb_run_name,
+        config={
+            'mode': 'image',
+            'repo_id': repo_id,
+            'num_episodes': dataset.ds.num_episodes,
+            'num_frames': len(dataset),
+            'batch_size': batch_size,
+            'num_epochs': num_epochs,
+            'horizon': horizon,
+            'n_obs_steps': n_obs_steps,
+            'n_action_steps': n_action_steps,
+            'lr': lr,
+            'down_dims': list(down_dims),
+            'resize_shape': resize_shape,
+            'crop_shape': crop_shape,
+            'n_params': n_params,
+            'obs_keys': list(shape_meta['obs'].keys()),
+            'action_dim': shape_meta['action']['shape'][0],
+        },
+        resume='allow',
+    )
 
     for epoch in range(start_epoch, num_epochs):
         policy.train()
@@ -161,27 +160,38 @@ def train_image(repo_id, root=None, episodes=None,
             epoch_losses.append(step_loss)
             global_step += 1
 
-            if use_wandb:
-                log_dict = {
-                    'train/loss': step_loss,
-                    'train/lr': optimizer.param_groups[0]['lr'],
-                    'train/ema_decay': ema.decay,
-                    'train/grad_norm': grad_norm.item(),
+            wandb.log({
+                'train/loss': step_loss,
+                'train/lr': optimizer.param_groups[0]['lr'],
+                'train/ema_decay': ema.decay,
+                'train/grad_norm': grad_norm.item(),
+            }, step=global_step)
+
+            if save_every_steps > 0 and global_step % save_every_steps == 0:
+                ckpt = {
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'policy_state_dict': policy.state_dict(),
+                    'ema_state_dict': ema.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'normalizer_state_dict': normalizer.state_dict(),
+                    'shape_meta': shape_meta,
                 }
-                wandb.log(log_dict, step=global_step)
+                path = os.path.join(output_dir, f'checkpoint_step{global_step}.pt')
+                torch.save(ckpt, path)
+                print(f"  saved {path}")
 
         epoch_time = time.time() - epoch_start
         avg_loss = np.mean(epoch_losses)
-        if use_wandb:
-            epoch_log = {
-                'epoch/loss': avg_loss,
-                'epoch/epoch': epoch,
-                'epoch/time_sec': epoch_time,
-            }
-            if torch.cuda.is_available():
-                epoch_log['epoch/gpu_mem_gb'] = torch.cuda.max_memory_allocated(device) / 1e9
-                torch.cuda.reset_peak_memory_stats(device)
-            wandb.log(epoch_log, step=global_step)
+        epoch_log = {
+            'epoch/loss': avg_loss,
+            'epoch/epoch': epoch,
+            'epoch/time_sec': epoch_time,
+        }
+        if torch.cuda.is_available():
+            epoch_log['epoch/gpu_mem_gb'] = torch.cuda.max_memory_allocated(device) / 1e9
+            torch.cuda.reset_peak_memory_stats(device)
+        wandb.log(epoch_log, step=global_step)
         if epoch % 50 == 0 or epoch == num_epochs - 1:
             lr_now = optimizer.param_groups[0]['lr']
             print(f"epoch {epoch:>5}/{num_epochs}: loss={avg_loss:.4f} lr={lr_now:.2e} ema_decay={ema.decay:.4f} time={epoch_time:.1f}s")
@@ -207,7 +217,6 @@ def train_image(repo_id, root=None, episodes=None,
         'normalizer_state_dict': normalizer.state_dict(),
         'shape_meta': shape_meta,
     }, final_path)
-    if use_wandb:
-        wandb.finish()
+    wandb.finish()
     print(f"Training complete. Final model: {final_path}")
     return policy
