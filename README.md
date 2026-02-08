@@ -12,8 +12,6 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
 - [ ] **Checkpoints** — Release trained checkpoints with download link
-- [x] **Observation timestamp alignment** — Fixed: obs uses `[-(To-1)/fps, ..., 0]`, action uses `[-(To-1)/fps, ..., (H-To)/fps]`. Training obs now covers past frames `[t-To+1, ..., t]`, matching inference obs_deque.
-- [x] **Action extraction offset** — Fixed: `start = To - 1` (execute from current time t). Consistent with original paper convention and the corrected timestamp alignment.
 - [ ] **Real environment evaluation** — `eval.py` currently only supports `--mock` mode with random observations. A proper evaluation requires a gym-compatible simulated environment (e.g., PushT, RoboSuite) or real robot rollout.
 
 ---
@@ -160,14 +158,17 @@ python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
     --epochs 3000 --batch 8 \
     --resize 96 96 --crop 76 76 \
-    --device cuda --output_dir outputs/my_run
+    --device cuda --output_dir outputs/my_run \
+    --save_every_steps 5000 --checkpoint_every 100 --max_keep_checkpoints 5 \
+    --wandb_run_name my_run
 ```
 
 - `--resize H W` — resize images to H×W before the encoder (saves GPU memory)
 - `--crop H W` — random crop to H×W during training, center crop at eval (data augmentation)
+- `--save_every_steps 5000` — save a step checkpoint every 5000 gradient steps; keep only the latest `--max_keep_checkpoints` (default: 3) to save disk space
+- `--checkpoint_every 100` — additionally save an epoch checkpoint every 100 epochs
 
-Wandb logging is always enabled (project: `Diffusion-Policy`). Use `--wandb_run_name` to set a custom run name.
-Checkpoints are saved every `--save_every_steps` gradient steps (default: 5000) and every `--checkpoint_every` epochs (default: 100).
+Wandb logging is always enabled (project: `Diffusion-Policy`). Checkpoints and `config.json` are saved to `output_dir`.
 
 ### Resume Training
 ```bash
