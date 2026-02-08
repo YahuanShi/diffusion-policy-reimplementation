@@ -160,12 +160,15 @@ class DiffusionUnetImagePolicy(nn.Module):
           1. Encode observations
           2. DDPM reverse denoising: x_T → x_{T-1} → ... → x_0
           3. Unnormalize to get real actions
-          4. Extract action[To:To+n_action_steps] — skip timesteps corresponding to observations
+          4. Extract action[To-1 : To-1+n_action_steps]
 
         Timeline (horizon=16, To=2, n_action_steps=8):
-          [obs obs | act act act act act act act act | (padding) ]
-           0   1     2   3   4   5   6   7   8   9    10 .. 15
-                     ^^^ start=To        end=To+8 ^^^
+          action_ts: [t-1, t, t+1, ..., t+14]
+                      0    1   2         15
+          obs covers positions 0..To-1 = [t-1, t]
+          Execute from position To-1 = 1 (current time t):
+          [t-1 | t  t+1 t+2 t+3 t+4 t+5 t+6 t+7 t+8 | t+9..t+14]
+           obs   ^^^ start=To-1          end=To-1+8 ^^^
         """
         B = next(iter(obs_dict.values())).shape[0]
         To = self.n_obs_steps
@@ -177,7 +180,7 @@ class DiffusionUnetImagePolicy(nn.Module):
 
         action_pred = self.normalizer["action"].unnormalize(naction_pred)
 
-        start = To
+        start = To - 1
         end = start + self.n_action_steps
         action = action_pred[:, start:end]
         return action

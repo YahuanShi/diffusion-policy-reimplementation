@@ -10,6 +10,13 @@ This wrapper does three things:
   1. Key renaming: observation.image → observation_image (nn.ModuleDict forbids dots in names)
   2. Auto-build shape_meta: infer the policy config from LeRobot features
   3. Normalizer: build action + state normalizer from dataset statistics
+
+Temporal alignment design:
+  obs timestamps:    [-(To-1)/fps, ..., 0]            — past To frames ending at current t
+  action timestamps: [-(To-1)/fps, ..., (H-To)/fps]  — full H-step horizon, same anchor
+
+  This matches inference where obs_deque = [frame(t-To+1), ..., frame(t)].
+  At inference, execute action_pred[:, To-1 : To-1+Ta] — starts at current time t.
 """
 
 import torch
@@ -57,12 +64,18 @@ class LeRobotImageDataset(Dataset):
                 )
             )
 
-        ts = [i / fps for i in range(horizon)]
-        dt = {action_key: ts}
+        # Obs: past n_obs_steps frames ending at current time t
+        #   e.g. n_obs_steps=2, fps=20 → [-0.05, 0.0]
+        # Action: full horizon anchored at the same past start
+        #   e.g. horizon=16, n_obs_steps=2, fps=20 → [-0.05, 0.0, 0.05, ..., 0.70]
+        # This matches inference where obs_deque = [frame(t-To+1), ..., frame(t)].
+        obs_ts = [(i - (n_obs_steps - 1)) / fps for i in range(n_obs_steps)]
+        action_ts = [(i - (n_obs_steps - 1)) / fps for i in range(horizon)]
+        dt = {action_key: action_ts}
         for k in image_keys:
-            dt[k] = ts
+            dt[k] = obs_ts
         if state_key in features:
-            dt[state_key] = ts
+            dt[state_key] = obs_ts
 
         del meta_ds
 
@@ -126,10 +139,12 @@ class LeRobotImageDataset(Dataset):
         normalizer = LinearNormalizer()
         hf = self.ds.hf_dataset
 
+        import numpy as np
+
         # Column access is orders of magnitude faster than row-by-row iteration
-        stats = {"action": torch.tensor(hf[self.action_key])}
+        stats = {"action": torch.from_numpy(np.array(hf[self.action_key]))}
         if self.state_key in self.ds.features:
-            stats[_safe_key(self.state_key)] = torch.tensor(hf[self.state_key])
+            stats[_safe_key(self.state_key)] = torch.from_numpy(np.array(hf[self.state_key]))
 
         normalizer.fit(stats)
         return normalizer
