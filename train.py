@@ -2,8 +2,9 @@
 Training entry point for diffusion policy (image mode, LeRobot format).
 
 Usage:
-    python train.py --repo_id local/my_dataset --root ./data/my_dataset --epochs 3000
-    python train.py --repo_id local/my_dataset --root ./data/my_dataset --resume outputs/checkpoint_epoch500.pt
+    python train.py --repo_id local/my_dataset --root ./data/my_dataset --max_steps 30000
+    python train.py --repo_id local/my_dataset --root ./data/my_dataset --max_steps 30000 \
+        --resume outputs/checkpoint_step20000.pt
 """
 
 import argparse
@@ -34,18 +35,22 @@ def main():
         metavar=("H", "W"),
         help="Crop images to (H, W) — random in training, center at eval",
     )
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=8)
 
     # Training
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--epochs", type=int, default=3000)
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=30000,
+        help="Total gradient steps to train (default: 30000)",
+    )
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--horizon", type=int, default=16)
     parser.add_argument("--n_obs_steps", type=int, default=2)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output_dir", default="outputs")
-    parser.add_argument("--checkpoint_every", type=int, default=100)
     parser.add_argument(
         "--save_every_steps",
         type=int,
@@ -61,7 +66,24 @@ def main():
     parser.add_argument(
         "--resume", default=None, help="Path to checkpoint to resume training from"
     )
-
+    parser.add_argument(
+        "--val_ratio",
+        type=float,
+        default=0.0,
+        help="Fraction of episodes held out for validation (0 to disable, e.g. 0.05)",
+    )
+    parser.add_argument(
+        "--val_every_steps",
+        type=int,
+        default=2000,
+        help="Run validation every N gradient steps (only if --val_ratio > 0)",
+    )
+    parser.add_argument(
+        "--max_val_batches",
+        type=int,
+        default=8,
+        help="Cap on validation batches per run (full reverse process is slow)",
+    )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
@@ -77,7 +99,7 @@ def main():
         root=args.root,
         episodes=args.episodes,
         device=args.device,
-        num_epochs=args.epochs,
+        max_steps=args.max_steps,
         batch_size=args.batch,
         horizon=args.horizon,
         n_obs_steps=args.n_obs_steps,
@@ -86,12 +108,14 @@ def main():
         image_keys=args.image_keys,
         lr=args.lr,
         output_dir=args.output_dir,
-        checkpoint_every=args.checkpoint_every,
         save_every_steps=args.save_every_steps,
         max_keep_checkpoints=args.max_keep_checkpoints,
         num_workers=args.num_workers,
         resize_shape=tuple(args.resize) if args.resize else None,
         crop_shape=tuple(args.crop) if args.crop else None,
+        val_ratio=args.val_ratio,
+        val_every_steps=args.val_every_steps,
+        max_val_batches=args.max_val_batches,
         seed=args.seed,
         wandb_run_name=args.wandb_run_name,
         resume_checkpoint=args.resume,
