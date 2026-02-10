@@ -25,10 +25,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from diffusion_policy.dataset.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
 from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
-from diffusion_policy.dataset.normalizer import LinearNormalizer
 
 
 class DiffusionUnetImagePolicy(nn.Module):

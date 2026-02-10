@@ -59,3 +59,14 @@ packages = [
     "training",
     "evaluation",
 ]
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["DP"]
+
+[tool.ruff.lint]
+# Pinned rule set: ruff's defaults change between releases, so CI must not depend on them
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["diffusion_policy", "training", "evaluation"]

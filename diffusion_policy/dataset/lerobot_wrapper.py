@@ -20,8 +20,8 @@ Temporal alignment design:
 """
 
 import torch
-from torch.utils.data import Dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from torch.utils.data import Dataset
 
 from diffusion_policy.dataset.normalizer import LinearNormalizer
 
@@ -144,7 +144,9 @@ class LeRobotImageDataset(Dataset):
         # Column access is orders of magnitude faster than row-by-row iteration
         stats = {"action": torch.from_numpy(np.array(hf[self.action_key]))}
         if self.state_key in self.ds.features:
-            stats[_safe_key(self.state_key)] = torch.from_numpy(np.array(hf[self.state_key]))
+            stats[_safe_key(self.state_key)] = torch.from_numpy(
+                np.array(hf[self.state_key])
+            )
 
         normalizer.fit(stats)
         return normalizer

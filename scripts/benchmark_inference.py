@@ -38,7 +38,17 @@ def build_unet(action_dim, obs_dim, horizon, device):
 
 
 @torch.no_grad()
-def benchmark(scheduler_cls, n_steps, model, action_dim, obs_dim, horizon, device, n_warmup=10, n_repeat=50):
+def benchmark(
+    scheduler_cls,
+    n_steps,
+    model,
+    action_dim,
+    obs_dim,
+    horizon,
+    device,
+    n_warmup=10,
+    n_repeat=50,
+):
     scheduler = scheduler_cls(num_train_timesteps=100)
     scheduler.set_timesteps(n_steps)
 
@@ -86,7 +96,9 @@ def main():
     model = build_unet(args.action_dim, args.obs_dim, args.horizon, device)
     n_params = sum(p.numel() for p in model.parameters())
 
-    print(f"\ndevice: {device}  |  action_dim={args.action_dim}  horizon={args.horizon}  obs_dim={args.obs_dim}  params={n_params:,}")
+    print(
+        f"\ndevice: {device}  |  action_dim={args.action_dim}  horizon={args.horizon}  obs_dim={args.obs_dim}  params={n_params:,}"
+    )
     print(f"{'scheduler':<12}  {'steps':>6}  {'latency':>10}  {'freq':>8}")
     print("-" * 44)
 
@@ -100,7 +112,14 @@ def main():
     for cls, steps in configs:
         name = cls.__name__.replace("Scheduler", "")
         lat, freq = benchmark(
-            cls, steps, model, args.action_dim, args.obs_dim, args.horizon, device, n_repeat=args.n_repeat
+            cls,
+            steps,
+            model,
+            args.action_dim,
+            args.obs_dim,
+            args.horizon,
+            device,
+            n_repeat=args.n_repeat,
         )
         print(f"{name:<12}  {steps:>6}  {lat:>8.1f} ms  {freq:>6.0f} Hz")
 

@@ -9,7 +9,8 @@ Validates:
 """
 
 import torch
-from diffusion_policy.model.diffusion.scheduler import DDPMScheduler, DDIMScheduler
+
+from diffusion_policy.model.diffusion.scheduler import DDIMScheduler, DDPMScheduler
 
 
 def test_forward_process_endpoints():
@@ -60,7 +61,9 @@ def test_ddim_deterministic():
         eps = torch.randn_like(traj_b)
         traj_b = scheduler.step(eps, t, traj_b).prev_sample
 
-    assert torch.allclose(traj_a, traj_b), "DDIM must be deterministic given same inputs"
+    assert torch.allclose(traj_a, traj_b), (
+        "DDIM must be deterministic given same inputs"
+    )
 
 
 def test_ddpm_oracle_reconstructs_x0():
@@ -74,7 +77,9 @@ def test_ddpm_oracle_reconstructs_x0():
     # pred_x0 = (x_t - sqrt(1 - alpha_bar_t) * eps) / sqrt(alpha_bar_t)
     alpha_t = scheduler.alphas_cumprod[t]
     pred_x0 = (xt - (1 - alpha_t).sqrt() * eps) / alpha_t.sqrt()
-    assert torch.allclose(pred_x0, x0, atol=1e-5), "Oracle eps must reconstruct x0 exactly"
+    assert torch.allclose(pred_x0, x0, atol=1e-5), (
+        "Oracle eps must reconstruct x0 exactly"
+    )
 
 
 def test_ddpm_ddim_compatible_shapes():
