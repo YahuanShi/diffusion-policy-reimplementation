@@ -169,7 +169,7 @@ python train.py \
     --wandb_run_name my_run
 ```
 
-- `--max_steps 30000` — total gradient steps; the cosine LR schedule spans exactly this many steps
+- `--max_steps 30000` — total gradient steps; LR warms up linearly for `--lr_warmup_steps` (default 500), then cosine-decays to lr/10 at exactly this step
 - `--val_ratio 0.05` — hold out 5% of episodes (split by episode); every `--val_every_steps` (default 2000) the EMA model is scored on them (`val/loss`, `val/action_mse`, `val/action_mae`). Default 0 = train on all episodes
 - `--save_every_steps 5000` — save a step checkpoint every 5000 gradient steps; keep only the latest `--max_keep_checkpoints` (default: 3) to save disk space
 
@@ -214,17 +214,18 @@ Hardware: UR3e + Weiss CRG 30-050 gripper + dual Intel RealSense cameras.
 # Install robot dependencies
 pip install ur-rtde pyrealsense2 pyserial opencv-python
 
-# Dry run (verify full pipeline without sending robot commands)
+# Dry run (full pipeline, robot never moves — not even to home)
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 --dry_run
 
-# Real deployment (frequency=20 matches training fps=20)
+# Real deployment (control rate defaults to the training dataset's fps)
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 \
     --steps_per_inference 6 --num_inference_steps 16 \
     --max_steps 500
 ```
 
+- `--frequency` — control rate in Hz; defaults to the dataset fps stored in the checkpoint and refuses a mismatch unless `--allow_fps_mismatch` is given
 - `--steps_per_inference` — actions executed per inference cycle (default: 6 of the 8 predicted)
 - `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
 - `--max_joint_vel` — per-joint velocity clamp in rad/s (default: 1.0)

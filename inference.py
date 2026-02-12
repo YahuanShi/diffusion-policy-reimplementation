@@ -445,6 +445,17 @@ def run_inference(
         obs_history.append(robot.get_obs())
         time.sleep(dt)
 
+    # Fail before moving if the robot's obs don't match what the policy was trained on
+    for policy_key, robot_key in key_map.items():
+        expected = tuple(shape_meta["obs"][policy_key]["shape"])
+        got = obs_history[-1][robot_key].shape
+        if robot_key != "state":
+            got = (got[2], got[0], got[1])  # HWC → CHW
+        if got != expected:
+            raise ValueError(
+                f"Obs '{robot_key}' has shape {got}, policy '{policy_key}' expects {expected}"
+            )
+
     # One warm-up inference pass to trigger CUDA kernel compilation
     log.info("Warming up policy inference...")
     with torch.no_grad():
@@ -550,8 +561,6 @@ def run_inference(
         sys.exit(1)
     finally:
         cv2.destroyAllWindows()
-        if not dry_run:
-            robot.stop()
         log.info(f"Inference ended at step {step}.")
 
 
@@ -566,8 +575,14 @@ def main():
     parser.add_argument(
         "--frequency",
         type=int,
-        default=20,
-        help="Control frequency in Hz; must match training fps=20",
+        default=None,
+        help="Control rate in Hz (default: the training dataset's fps). Must match the "
+        "dataset fps — obs spacing and per-step actions were learned at that rate.",
+    )
+    parser.add_argument(
+        "--allow_fps_mismatch",
+        action="store_true",
+        help="Run even if --frequency differs from the dataset fps",
     )
     parser.add_argument(
         "--steps_per_inference",
@@ -609,36 +624,60 @@ def main():
     logging.basicConfig(level=logging.INFO, force=True)
 
     log.info("Loading policy...")
-    policy, shape_meta, _ = load_policy(
+    policy, shape_meta, config = load_policy(
         args.checkpoint, args.device, num_inference_steps=args.num_inference_steps
     )
+    dataset_fps = config.get("fps")
     log.info(
         f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}, "
-        f"DDIM steps: {args.num_inference_steps}"
+        f"DDIM steps: {args.num_inference_steps}, dataset fps: {dataset_fps}"
     )
+
+    frequency = args.frequency
+    if frequency is None:
+        if dataset_fps is None:
+            parser.error("checkpoint does not record the dataset fps; pass --frequency")
+        frequency = dataset_fps
+    elif dataset_fps is not None and frequency != dataset_fps:
+        msg = (
+            f"--frequency {frequency} differs from the dataset fps {dataset_fps}: "
+            "the robot would move at the wrong speed and obs frames would be "
+            "spaced differently than in training."
+        )
+        if not args.allow_fps_mismatch:
+            parser.error(msg + " Pass --allow_fps_mismatch to run anyway.")
+        log.warning(msg)
 
     log.info(f"Connecting to UR3e at {args.robot_ip}...")
     robot = UR3eRobot(
         robot_ip=args.robot_ip,
-        frequency=args.frequency,
+        frequency=frequency,
         use_gripper=not args.no_gripper,
         cam_serial_exterior=args.cam_exterior,
         cam_serial_wrist=args.cam_wrist,
         max_joint_vel=args.max_joint_vel,
     )
 
-    robot.home()
+    try:
+        # A dry run must never move the robot — not even to home
+        if args.dry_run:
+            log.info("[dry run] Skipping homing — robot and gripper will not move.")
+        else:
+            robot.home()
 
-    run_inference(
-        policy=policy,
-        robot=robot,
-        shape_meta=shape_meta,
-        device=args.device,
-        frequency=args.frequency,
-        steps_per_inference=args.steps_per_inference,
-        max_steps=args.max_steps,
-        dry_run=args.dry_run,
-    )
+        run_inference(
+            policy=policy,
+            robot=robot,
+            shape_meta=shape_meta,
+            device=args.device,
+            frequency=frequency,
+            steps_per_inference=args.steps_per_inference,
+            max_steps=args.max_steps,
+            dry_run=args.dry_run,
+        )
+    finally:
+        # Always release cameras and serial port (also in a dry run)
+        robot.stop()
 
 
 if __name__ == "__main__":
