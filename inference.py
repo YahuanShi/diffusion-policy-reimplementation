@@ -11,13 +11,15 @@ Observation dict (matches LeRobot training format after safe_key renaming):
     observation_images_wrist_image_left       (B, T, 3, H, W) float32
     observation_state                         (B, T, state_dim) float32
 
-Action format: (7,) = [6 joint angles in DEGREES (model output, converted to rad before servoJ), 1 gripper (0=open, 1=close)]
+Action format: (7,) = [6 joint angles in DEGREES (model output, converted to rad before servoJ), 1 gripper (1=open, 0=closed — same as training data)]
 
 Usage:
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 --dry_run
     python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 \
         --steps_per_inference 6 --num_inference_steps 16
+    python inference.py --checkpoint outputs/policy_final.pt --robot_ip 10.0.0.1 \
+        --record_dir trials/   # save videos + actions, then ask whether the trial succeeded
 """
 
 import argparse
@@ -31,7 +33,12 @@ import cv2
 import numpy as np
 import torch
 
-from diffusion_policy.control import GripperHysteresis, plan_execution, precise_wait
+from diffusion_policy.control import (
+    GripperHysteresis,
+    TimingStats,
+    plan_execution,
+    precise_wait,
+)
 from diffusion_policy.policy.loader import load_policy
 
 log = logging.getLogger(__name__)
@@ -44,11 +51,16 @@ GRIPPER_BAUDRATE = 9600
 GRIPPER_MAX_MM = 50
 GRIPPER_OPEN_THRESH_MM = 5.0
 
+# Gripper convention of the training data: 1 = open, 0 = closed (every demo starts and
+# ends open). Both the state fed to the policy and the action channel use it.
+GRIPPER_STATE_OPEN = 1.0
+GRIPPER_STATE_CLOSED = 0.0
+
 # Hysteresis thresholds for gripper state switching.
-# action[6] must exceed CLOSE_THRESH to trigger close (when currently open),
-# and fall below OPEN_THRESH to trigger open (when currently closed).
-GRIPPER_CLOSE_THRESH = 0.65
-GRIPPER_OPEN_THRESH = 0.35
+# action[6] must fall below CLOSE_THRESH to trigger close (when currently open),
+# and rise above OPEN_THRESH to trigger open (when currently closed).
+GRIPPER_CLOSE_THRESH = 0.35
+GRIPPER_OPEN_THRESH = 0.65
 # Minimum steps to hold gripper state before allowing another switch.
 # Prevents chunk-boundary disagreement: consecutive inference cycles can produce
 # conflicting gripper predictions; dwell time absorbs that noise.
@@ -58,6 +70,8 @@ GRIPPER_MIN_DWELL_STEPS = 20
 CAM_SERIAL_EXTERIOR = "105422061000"
 CAM_SERIAL_WRIST = "352122273671"
 IMAGE_SIZE = 480
+# A cached camera frame / gripper reading older than this means the reader stalled
+MAX_SENSOR_AGE_S = 0.5
 
 HOME_DEG = [45, -20, -140, -40, -270, 0]
 HOME_RAD = np.radians(HOME_DEG).astype(np.float32)
@@ -82,16 +96,30 @@ JOINT_LIMIT_HIGH = np.radians([180, 5, 170, 175, -220, 360]).astype(np.float32)
 # ══════════════════════════════ Gripper ══════════════════════════════
 
 
+def gripper_state_from_width(width_mm):
+    """Measured jaw width → state value in the training-data convention (1 = open)."""
+    return (
+        GRIPPER_STATE_OPEN
+        if width_mm > GRIPPER_OPEN_THRESH_MM
+        else GRIPPER_STATE_CLOSED
+    )
+
+
 class WeissCRGGripper:
     """
     Weiss CRG 30-050 gripper driver via DC-IOLink USB adapter.
 
     Protocol: PDOUT=[02,00] open | PDOUT=[03,00] close | PDOUT=[07,00] reference
     Feedback: @PDIN=[B0,B1,B2,B3] where pos_mm = ((B0<<8)|B1)/100
+
+    A background thread drains the serial port continuously and caches the latest
+    @PDIN reading. Reading inside the control loop instead would block for up to the
+    serial timeout and, worse, return the *oldest* buffered line — a stale state.
     """
 
     FLAG_OPEN = 1
     FLAG_CLOSED = 2
+    READ_TIMEOUT_S = 0.02  # max time the reader holds the lock per readline
 
     def __init__(self, port=GRIPPER_PORT, baudrate=GRIPPER_BAUDRATE):
         import serial as _serial
@@ -100,8 +128,14 @@ class WeissCRGGripper:
         self._ser = _serial.Serial(port=port, baudrate=baudrate, timeout=0.2)
         self._position_mm = 0.0
         self._flags = 0
+        self._last_update = 0.0
         log.info(f"[Gripper] Opened {port} @ {baudrate}")
         self._initialise()
+
+        self._ser.timeout = self.READ_TIMEOUT_S
+        self._stop_event = threading.Event()
+        self._reader = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader.start()
 
     def _send(self, cmd, wait=0.3):
         with self._lock:
@@ -118,30 +152,32 @@ class WeissCRGGripper:
             parts = [int(x, 16) for x in inner.split(",")]
             self._position_mm = ((parts[0] << 8) | parts[1]) / 100.0
             self._flags = parts[3] if len(parts) >= 4 else 0
+            self._last_update = time.monotonic()
             return True
-        except Exception:
+        except (ValueError, IndexError):
             return False
 
-    def _read_pdin(self, timeout=1.0):
-        t0 = time.monotonic()
-        with self._lock:
-            saved, self._ser.timeout = self._ser.timeout, 0.15
-        try:
-            while time.monotonic() - t0 < timeout:
-                with self._lock:
-                    line = self._ser.readline().decode("ascii", errors="ignore").strip()
-                if line.startswith("@PDIN=[") and self._parse_pdin(line):
-                    return True
-        finally:
+    def _reader_loop(self):
+        while not self._stop_event.is_set():
             with self._lock:
-                self._ser.timeout = saved
-        return False
+                try:
+                    raw = self._ser.readline() if self._ser.is_open else b""
+                except Exception as e:
+                    log.warning(f"[Gripper] Read error: {e}")
+                    raw = b""
+            line = raw.decode("ascii", errors="ignore").strip()
+            if line.startswith("@PDIN=["):
+                self._parse_pdin(line)
+            elif not raw:
+                time.sleep(0.001)  # let _send grab the lock between empty reads
 
     def _wait_flag(self, flag_bit, timeout=6.0):
+        """Wait for a flag in a reading that arrived *after* this call started."""
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
-            if self._read_pdin(0.5) and (self._flags & (1 << flag_bit)):
+            if self._last_update > t0 and (self._flags & (1 << flag_bit)):
                 return True
+            time.sleep(0.02)
         return False
 
     def _set_positions(self, open_mm=GRIPPER_MAX_MM, close_mm=0.5):
@@ -165,7 +201,8 @@ class WeissCRGGripper:
         log.info("[Gripper] Homing...")
         self._set_positions(GRIPPER_MAX_MM, 0.5)
         self._send("PDOUT=[07,00]", 0.2)
-        self._wait_flag(self.FLAG_OPEN, timeout=10.0)
+        if not self._wait_flag(self.FLAG_OPEN, timeout=10.0):
+            log.warning("[Gripper] No 'open' flag after homing — check the gripper")
         log.info("[Gripper] Home complete — open.")
 
     def move_to_pos(self, width_mm):
@@ -177,10 +214,12 @@ class WeissCRGGripper:
             self._send("PDOUT=[03,00]", 0.0)
 
     def get_width(self):
-        self._read_pdin(timeout=0.08)
-        return self._position_mm
+        """Latest cached width in mm and its age in seconds (never blocks)."""
+        return self._position_mm, time.monotonic() - self._last_update
 
     def close(self):
+        self._stop_event.set()
+        self._reader.join(timeout=1.0)
         # Zero all outputs to cut drive, then close serial immediately.
         # Do NOT send FALLBACK(1) here — it activates the gripper's internal
         # fallback program which causes it to cycle open/close autonomously.
@@ -203,26 +242,61 @@ def _center_crop_resize(bgr, size=IMAGE_SIZE):
     return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
 
-def _start_realsense(serial_num):
-    import pyrealsense2 as rs
+class RealSenseCamera:
+    """
+    One RealSense color stream captured by a background thread.
 
-    pipeline = rs.pipeline()
-    cfg = rs.config()
-    cfg.enable_device(serial_num)
-    cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    pipeline.start(cfg)
-    log.info(f"[Camera] Started — serial {serial_num}")
-    return pipeline
+    wait_for_frames() blocks until the next frame (up to 33 ms at 30 fps); doing that
+    for two cameras inside get_obs() would eat most of a 50 ms control period. The
+    thread keeps only the latest frame, so read() returns immediately.
+    """
 
+    def __init__(self, serial_num, width=640, height=480, fps=30):
+        import pyrealsense2 as rs
 
-def _grab_frame(pipeline, retries=3):
-    for attempt in range(retries):
-        frames = pipeline.wait_for_frames(timeout_ms=500)
-        color = frames.get_color_frame()
-        if color:
-            return np.asanyarray(color.get_data())
-        log.warning(f"[Camera] No frame, retry {attempt + 1}/{retries}")
-    raise RuntimeError("Camera failed after retries")
+        self.serial = serial_num
+        self._pipeline = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_device(serial_num)
+        cfg.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+        self._pipeline.start(cfg)
+        self._frame = None
+        self._t_frame = 0.0
+        self._frame_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+        log.info(f"[Camera] Started — serial {serial_num}")
+
+    def _capture_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                frames = self._pipeline.wait_for_frames(timeout_ms=500)
+            except RuntimeError as e:
+                log.warning(f"[Camera {self.serial}] {e}")
+                continue
+            color = frames.get_color_frame()
+            if color:
+                bgr = np.asanyarray(color.get_data()).copy()
+                with self._frame_lock:
+                    self._frame, self._t_frame = bgr, time.monotonic()
+
+    def read(self, timeout=2.0):
+        """Latest BGR frame and its age in seconds. Waits only for the very first frame."""
+        t0 = time.monotonic()
+        while True:
+            with self._frame_lock:
+                frame, t_frame = self._frame, self._t_frame
+            if frame is not None:
+                return frame, time.monotonic() - t_frame
+            if time.monotonic() - t0 > timeout:
+                raise RuntimeError(f"Camera {self.serial} produced no frame")
+            time.sleep(0.005)
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join(timeout=1.0)
+        self._pipeline.stop()
 
 
 # ══════════════════════════════ Robot ══════════════════════════════
@@ -261,8 +335,8 @@ class UR3eRobot:
             self._last_gripper_open = True
 
         log.info("[UR3e] Starting cameras...")
-        self._pipe_exterior = _start_realsense(cam_serial_exterior)
-        self._pipe_wrist = _start_realsense(cam_serial_wrist)
+        self._cam_exterior = RealSenseCamera(cam_serial_exterior)
+        self._cam_wrist = RealSenseCamera(cam_serial_wrist)
 
         self._last_cmd_rad = HOME_RAD.copy()
 
@@ -281,26 +355,41 @@ class UR3eRobot:
         log.info("[UR3e] Ready.")
 
     def get_obs(self):
+        """
+        Assemble one observation from cached sensor readings (non-blocking).
+
+        Returns the obs dict plus "sensor_age_s": the age of the oldest reading used.
+        Raises if a sensor stalled, so the robot stops instead of acting on stale data.
+        """
         qpos = np.array(self._rtde_r.getActualQ(), dtype=np.float32)
 
-        gripper_state = np.array([0.0], dtype=np.float32)
+        # No gripper attached → report "open", the state every demonstration starts in
+        gripper_state = np.array([GRIPPER_STATE_OPEN], dtype=np.float32)
+        ages = []
         if self._gripper:
-            width = self._gripper.get_width()
-            gripper_state[0] = 0.0 if width > GRIPPER_OPEN_THRESH_MM else 1.0
+            width, gripper_age = self._gripper.get_width()
+            ages.append(gripper_age)
+            gripper_state[0] = gripper_state_from_width(width)
 
         # Training data stores joint angles in DEGREES — normalizer was fitted on degrees.
         # getActualQ() returns radians, so convert before building the state vector.
         state = np.concatenate([np.degrees(qpos), gripper_state])
 
-        exterior_bgr = _grab_frame(self._pipe_exterior)
-        wrist_bgr = _grab_frame(self._pipe_wrist)
-        exterior_rgb = _center_crop_resize(exterior_bgr, self._image_size)
-        wrist_rgb = _center_crop_resize(wrist_bgr, self._image_size)
+        exterior_bgr, ext_age = self._cam_exterior.read()
+        wrist_bgr, wrist_age = self._cam_wrist.read()
+        ages += [ext_age, wrist_age]
+        sensor_age = max(ages)
+        if sensor_age > MAX_SENSOR_AGE_S:
+            raise RuntimeError(
+                f"Stale sensor data ({sensor_age * 1000:.0f} ms old) — "
+                "camera or gripper reader stalled"
+            )
 
         return {
             "state": state,
-            "exterior_rgb": exterior_rgb,
-            "wrist_rgb": wrist_rgb,
+            "exterior_rgb": _center_crop_resize(exterior_bgr, self._image_size),
+            "wrist_rgb": _center_crop_resize(wrist_bgr, self._image_size),
+            "sensor_age_s": sensor_age,
         }
 
     def apply_action(self, action, gripper_open):
@@ -340,11 +429,11 @@ class UR3eRobot:
             pass
         if self._gripper:
             self._gripper.close()
-        try:
-            self._pipe_exterior.stop()
-            self._pipe_wrist.stop()
-        except Exception:
-            pass
+        for cam in (self._cam_exterior, self._cam_wrist):
+            try:
+                cam.stop()
+            except Exception as e:
+                log.warning(f"[Camera {cam.serial}] stop failed: {e}")
         log.info("[UR3e] Stopped.")
 
 
@@ -357,7 +446,7 @@ def make_vis_frame(obs, action, step, inference_ms, eff_gripper_open=True):
         [cv2.resize(ext, (disp, disp)), cv2.resize(wrist, (disp, disp))], axis=1
     )
     gripper_cmd = "open" if eff_gripper_open else "close"
-    gripper_actual = "closed" if obs["state"][-1] > 0.5 else "open"
+    gripper_actual = "open" if obs["state"][-1] > 0.5 else "closed"
     lines = [
         f"Step: {step}",
         f"Infer: {inference_ms:.0f}ms",
@@ -428,10 +517,17 @@ def run_inference(
     shape_meta,
     device="cuda",
     steps_per_inference=6,
-    max_steps=500,
+    max_steps=800,
     frequency=20,
     dry_run=False,
+    recorder=None,
 ):
+    """
+    Run the receding-horizon control loop until max_steps or the user stops it.
+
+    recorder: optional evaluation.trial_recorder.TrialRecorder — every executed step is
+    appended to it. Returns the TimingStats of the run.
+    """
     dt = 1.0 / frequency
     frame_latency = 1.0 / 30  # camera runs at 30 fps
     n_obs_steps = policy.n_obs_steps
@@ -469,8 +565,13 @@ def run_inference(
     iter_idx = 0
     # Single source of truth for the gripper command (robot + visualisation)
     gripper = GripperHysteresis(
-        GRIPPER_CLOSE_THRESH, GRIPPER_OPEN_THRESH, GRIPPER_MIN_DWELL_STEPS
+        close_thresh=GRIPPER_CLOSE_THRESH,
+        open_thresh=GRIPPER_OPEN_THRESH,
+        min_dwell_steps=GRIPPER_MIN_DWELL_STEPS,
     )
+    # obs: get_obs() duration | late: how far past its slot an action was sent
+    # age: age of the oldest sensor reading | infer: policy.predict_action()
+    timing = TimingStats()
     t_start = time.monotonic()
 
     try:
@@ -483,7 +584,9 @@ def run_inference(
             # Take a fresh obs snapshot at the scheduled cycle boundary so the
             # model always sees obs from a consistent, predictable point in time.
             precise_wait(t_cycle_start)
+            t_obs = time.monotonic()
             obs = robot.get_obs()
+            timing.add("obs", (time.monotonic() - t_obs) * 1000)
             obs_history.append(obs)
 
             obs_dict = build_obs_dict(obs_history, key_map, device)
@@ -493,6 +596,7 @@ def run_inference(
             with torch.no_grad():
                 action_chunk = policy.predict_action(obs_dict)
             inference_ms = (time.monotonic() - t_inf_start) * 1000
+            timing.add("infer", inference_ms)
 
             actions = action_chunk[0].cpu().numpy()  # (n_action_steps, action_dim)
 
@@ -508,10 +612,7 @@ def run_inference(
                 n_action_steps,
                 max_steps - step,
             )
-            log.info(
-                f"step {step:>4}: inference={inference_ms:.0f}ms  "
-                f"skip={exec_start}  exec={exec_end - exec_start}"
-            )
+            cycle_obs_ms, cycle_late_ms, cycle_age_ms = [], [], []
             if exec_start == exec_end:
                 log.warning(
                     f"Inference ({inference_ms:.0f}ms) overran the whole cycle "
@@ -521,14 +622,24 @@ def run_inference(
             # ── Execute action chunk ─────────────────────────────────────────
             for i in range(exec_start, exec_end):
                 # Each action fires at its absolute scheduled time slot
-                precise_wait(t_cycle_start + i * dt)
+                t_slot = t_cycle_start + i * dt
+                precise_wait(t_slot)
+                cycle_late_ms.append((time.monotonic() - t_slot) * 1000)
 
                 gripper_open = gripper.update(float(actions[i][6]))
                 if not dry_run:
                     robot.apply_action(actions[i], gripper_open)
 
+                t_obs = time.monotonic()
                 obs = robot.get_obs()
+                obs_ms = (time.monotonic() - t_obs) * 1000
+                cycle_obs_ms.append(obs_ms)
+                cycle_age_ms.append(obs["sensor_age_s"] * 1000)
                 obs_history.append(obs)
+                if recorder is not None:
+                    recorder.add_step(
+                        obs, actions[i], gripper_open, inference_ms, obs_ms
+                    )
 
                 # Visualize — non-blocking
                 cv2.imshow(
@@ -540,6 +651,25 @@ def run_inference(
                     raise KeyboardInterrupt
 
                 step += 1
+
+            for name, vals in (
+                ("obs", cycle_obs_ms),
+                ("late", cycle_late_ms),
+                ("age", cycle_age_ms),
+            ):
+                for v in vals:
+                    timing.add(name, v)
+            max_obs = max(cycle_obs_ms, default=0.0)
+            log.info(
+                f"step {step:>4}: infer={inference_ms:.0f}ms skip={exec_start} "
+                f"exec={exec_end - exec_start} obs_max={max_obs:.0f}ms "
+                f"late_max={max(cycle_late_ms, default=0.0):.0f}ms "
+                f"age_max={max(cycle_age_ms, default=0.0):.0f}ms"
+            )
+            if max_obs > 0.5 * dt * 1000:
+                log.warning(
+                    f"get_obs took {max_obs:.0f}ms (> half the {dt * 1000:.0f}ms period)"
+                )
 
             now = time.monotonic()
             if now > t_cycle_end:
@@ -561,7 +691,14 @@ def run_inference(
         sys.exit(1)
     finally:
         cv2.destroyAllWindows()
-        log.info(f"Inference ended at step {step}.")
+        elapsed = time.monotonic() - t_start
+        rate = step / elapsed if elapsed > 0 else 0.0
+        log.info(
+            f"Inference ended at step {step}. Effective rate {rate:.1f}Hz "
+            f"(target {frequency}Hz)"
+        )
+        log.info(f"Timing: {timing.format()}")
+    return timing
 
 
 # ══════════════════════════════ Main ══════════════════════════════
@@ -596,7 +733,17 @@ def main():
         default=16,
         help="DDIM denoising steps at inference (default: 16)",
     )
-    parser.add_argument("--max_steps", type=int, default=500)
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=800,
+        help="Control steps per trial (default: 800 = 40s at 20Hz; longest demo is ~33s)",
+    )
+    parser.add_argument(
+        "--record_dir",
+        default=None,
+        help="Save each trial (videos, actions, timing) here and ask for the outcome",
+    )
     parser.add_argument(
         "--max_joint_vel",
         type=float,
@@ -658,6 +805,24 @@ def main():
         max_joint_vel=args.max_joint_vel,
     )
 
+    recorder = None
+    if args.record_dir:
+        from evaluation.trial_recorder import TrialRecorder
+
+        recorder = TrialRecorder(
+            args.record_dir,
+            fps=frequency,
+            meta={
+                "checkpoint": args.checkpoint,
+                "frequency": frequency,
+                "steps_per_inference": args.steps_per_inference,
+                "num_inference_steps": args.num_inference_steps,
+                "max_steps": args.max_steps,
+                "dry_run": args.dry_run,
+            },
+        )
+        log.info(f"Recording trial to {recorder.trial_dir}")
+
     try:
         # A dry run must never move the robot — not even to home
         if args.dry_run:
@@ -674,10 +839,16 @@ def main():
             steps_per_inference=args.steps_per_inference,
             max_steps=args.max_steps,
             dry_run=args.dry_run,
+            recorder=recorder,
         )
     finally:
         # Always release cameras and serial port (also in a dry run)
         robot.stop()
+        if recorder is not None:
+            from evaluation.trial_recorder import ask_trial_outcome
+
+            success, notes = ask_trial_outcome()
+            log.info(f"Saved trial to {recorder.close(success, notes)}")
 
 
 if __name__ == "__main__":
