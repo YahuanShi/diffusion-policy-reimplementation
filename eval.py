@@ -4,15 +4,20 @@ Evaluation entry point — loads a trained image policy checkpoint and evaluates
 The checkpoint contains shape_meta, normalizer and the training config, so the model
 architecture is fully reconstructed without hardcoding dimensions.
 
-Two modes:
+Three modes:
   offline (default) — predicted vs recorded action chunks on held-out LeRobot episodes.
                       Defaults to the val episodes stored in the checkpoint (train.py --val_ratio).
+  --sim TASK        — closed-loop rollouts in the shared Franka simulation (robot-sim repo,
+                      robosuite) with fixed seeds; reports the success rate. Needs
+                      `uv pip install --python DP/bin/python -e ../robot-sim`.
   --mock            — rollout loop against a random-observation env (pipeline smoke test only;
                       the reward is meaningless).
 
 Usage:
     python eval.py --checkpoint outputs/policy_final.pt --device cuda
     python eval.py --checkpoint outputs/policy_final.pt --device cuda --episodes 3 17 42
+    python eval.py --checkpoint outputs/lift/policy_final.pt --device cuda --sim lift \
+        --n_episodes 50 --video_dir outputs/lift/videos
     python eval.py --checkpoint outputs/policy_final.pt --mock
 """
 
@@ -86,6 +91,32 @@ def run_mock(policy, shape_meta, args):
     print(f"max_reward: {result['max_reward']:.4f}")
 
 
+def run_sim(policy, shape_meta, args):
+    from robot_sim.evaluate import evaluate
+
+    from evaluation.sim_policy import DiffusionSimPolicy
+
+    action_dim = shape_meta["action"]["shape"][0]
+    action_space = {10: "abs", 7: "delta"}.get(action_dim)
+    if action_space is None:
+        raise SystemExit(f"Action dim {action_dim} matches no robot_sim action space")
+    image_shapes = [
+        v["shape"] for v in shape_meta["obs"].values() if v.get("type") == "rgb"
+    ]
+    image_size = image_shapes[0][-1]
+    sim_policy = DiffusionSimPolicy(policy, shape_meta, device=args.device)
+    evaluate(
+        sim_policy,
+        task=args.sim,
+        n_episodes=args.n_episodes,
+        start_seed=args.start_seed,
+        image_size=image_size,
+        action_space=action_space,
+        video_dir=args.video_dir,
+        output_json=args.output_json,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -93,6 +124,16 @@ def main():
     parser.add_argument("--num_inference_steps", type=int, default=16)
     parser.add_argument("--mock", action="store_true", help="Random-obs smoke test")
     parser.add_argument("--n_test", type=int, default=50, help="Mock episodes")
+
+    # Simulation mode
+    parser.add_argument(
+        "--sim", default=None, metavar="TASK", help="robot_sim task (lift, can)"
+    )
+    parser.add_argument("--n_episodes", type=int, default=50)
+    parser.add_argument("--start_seed", type=int, default=100_000)
+    parser.add_argument(
+        "--video_dir", default=None, help="Save videos of the first episodes"
+    )
 
     # Offline mode
     parser.add_argument("--repo_id", default=None, help="Override checkpoint repo_id")
@@ -108,7 +149,9 @@ def main():
         args.checkpoint, args.device, num_inference_steps=args.num_inference_steps
     )
 
-    if args.mock:
+    if args.sim:
+        run_sim(policy, shape_meta, args)
+    elif args.mock:
         run_mock(policy, shape_meta, args)
     else:
         run_offline(policy, config, args)
