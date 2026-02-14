@@ -16,7 +16,7 @@ closed loop from 84×84 camera images. Real-robot demo pending (no real-robot da
 
 - [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment (simulation demo above)
 - [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
-- [x] **Simulation results** — robomimic Lift / Can in the shared Franka simulation, compared against ACT (see [Simulation](#simulation-franka-panda))
+- [x] **Simulation results** — robomimic Lift / Can / Square in the shared Franka simulation, compared against ACT (see [Simulation](#simulation-franka-panda))
 - [ ] **Real-robot success rate** — run N trials with `inference.py --num_episodes N --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
 
 Tooling for the real-robot items is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is collecting real-robot data, training on it and running the trials.
@@ -241,14 +241,15 @@ python eval.py --checkpoint outputs/sim_lift/policy_final.pt --device cuda \
 Results (50 episodes, seeds 100000–100049, 95% Wilson interval), same seeds as the ACT
 reimplementation:
 
-| Policy | Training | Lift | Can |
-|---|---|---|---|
-| Diffusion Policy (U-Net) | 30k steps | **50/50 = 100%** (93–100%) | **48/50 = 96%** (87–99%) |
-| ACT, chunked execution | 60 epochs | 50/50 = 100% (93–100%) | 40/50 = 80% (67–89%) |
-| ACT, temporal ensembling | 60 epochs | 50/50 = 100% (93–100%) | 44/50 = 88% (76–94%) |
+| Policy | Training | Lift | Can | Square |
+|---|---|---|---|---|
+| Diffusion Policy (U-Net) | 30k steps | **50/50 = 100%** (93–100%) | **48/50 = 96%** (87–99%) | 35/50 = 70% (56–81%) |
+| ACT, chunked execution | 60 epochs | 50/50 = 100% (93–100%) | 40/50 = 80% (67–89%) | 33/50 = 66% (52–78%) |
+| ACT, temporal ensembling | 60 epochs | 50/50 = 100% (93–100%) | 44/50 = 88% (76–94%) | 35/50 = 70% (56–81%) |
 
 On Can, Diffusion Policy beats chunked ACT with non-overlapping intervals; the gap to ACT
-with temporal ensembling is within noise. Both methods use their default hyperparameters.
+with temporal ensembling is within noise. On Square, the hardest of the three tasks, all
+three are tied at 66–70%. Both methods use their default hyperparameters.
 Each episode seeds torch with its environment seed (`DiffusionSimPolicy.reset`), so reruns
 reproduce the diffusion sampling; only pixel-level EGL rendering noise remains. Details
 and the analysis are in the [robot-sim README](../robot-sim#results-closed-loop-8484-images-absolute-actions).
