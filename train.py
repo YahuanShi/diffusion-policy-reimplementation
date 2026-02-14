@@ -4,6 +4,8 @@ Training entry point for diffusion policy (image mode, LeRobot format).
 Usage:
     python train.py --repo_id local/my_dataset --root ./data/my_dataset --max_steps 30000
     python train.py --repo_id local/my_dataset --root ./data/my_dataset --max_steps 30000 \
+        --wandb --wandb_run_name my_run
+    python train.py --repo_id local/my_dataset --root ./data/my_dataset --max_steps 30000 \
         --resume outputs/checkpoint_step20000.pt
 """
 
@@ -45,7 +47,7 @@ def main():
         default=30000,
         help="Total gradient steps to train (default: 30000)",
     )
-    parser.add_argument("--batch", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--horizon", type=int, default=16)
     parser.add_argument("--n_obs_steps", type=int, default=2)
     parser.add_argument("--n_action_steps", type=int, default=8)
@@ -95,6 +97,8 @@ def main():
     )
 
     # Wandb
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument("--wandb_project", default="Diffusion-Policy")
     parser.add_argument("--wandb_run_name", default=None, help="Wandb run name")
     args = parser.parse_args()
 
@@ -106,7 +110,7 @@ def main():
         episodes=args.episodes,
         device=args.device,
         max_steps=args.max_steps,
-        batch_size=args.batch,
+        batch_size=args.batch_size,
         horizon=args.horizon,
         n_obs_steps=args.n_obs_steps,
         n_action_steps=args.n_action_steps,
@@ -124,6 +128,8 @@ def main():
         val_every_steps=args.val_every_steps,
         max_val_batches=args.max_val_batches,
         seed=args.seed,
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         resume_checkpoint=args.resume,
     )

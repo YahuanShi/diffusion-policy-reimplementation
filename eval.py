@@ -7,9 +7,9 @@ architecture is fully reconstructed without hardcoding dimensions.
 Three modes:
   offline (default) — predicted vs recorded action chunks on held-out LeRobot episodes.
                       Defaults to the val episodes stored in the checkpoint (train.py --val_ratio).
-  --sim TASK        — closed-loop rollouts in the shared Franka simulation (robot-sim repo,
-                      robosuite) with fixed seeds; reports the success rate. Needs
-                      `uv pip install --python DP/bin/python -e ../robot-sim`.
+  --sim TASK        — closed-loop rollouts (lift, can, square) in the shared Franka
+                      simulation (robot-sim repo, robosuite) with fixed seeds; reports the
+                      success rate. Needs `uv pip install --python DP/bin/python -e ../robot-sim`.
   --mock            — rollout loop against a random-observation env (pipeline smoke test only;
                       the reward is meaningless).
 
@@ -58,7 +58,7 @@ def run_offline(policy, config, args):
         video_backend=config.get("video_backend", "pyav"),
     )
     loader = DataLoader(
-        dataset, batch_size=args.batch, shuffle=False, num_workers=args.num_workers
+        dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
     )
     print(f"Offline eval on episodes {episodes} ({len(dataset)} samples)")
 
@@ -82,7 +82,7 @@ def run_mock(policy, shape_meta, args):
     runner = EvalRunner(
         env_factory=lambda: MockEnv(shape_meta=shape_meta),
         shape_meta=shape_meta,
-        n_test=args.n_test,
+        n_episodes=args.n_episodes,
         n_obs_steps=policy.n_obs_steps,
         n_action_steps=policy.n_action_steps,
     )
@@ -112,7 +112,9 @@ def run_sim(policy, shape_meta, args):
         start_seed=args.start_seed,
         image_size=image_size,
         action_space=action_space,
+        max_steps=args.max_steps,
         video_dir=args.video_dir,
+        n_videos=args.n_videos,
         output_json=args.output_json,
     )
 
@@ -123,23 +125,28 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--num_inference_steps", type=int, default=16)
     parser.add_argument("--mock", action="store_true", help="Random-obs smoke test")
-    parser.add_argument("--n_test", type=int, default=50, help="Mock episodes")
 
     # Simulation mode
     parser.add_argument(
-        "--sim", default=None, metavar="TASK", help="robot_sim task (lift, can)"
+        "--sim", default=None, metavar="TASK", help="robot_sim task (lift, can, square)"
     )
     parser.add_argument("--n_episodes", type=int, default=50)
-    parser.add_argument("--start_seed", type=int, default=100_000)
+    parser.add_argument(
+        "--start_seed", type=int, default=100_000, help="Episode i uses start_seed + i"
+    )
+    parser.add_argument(
+        "--max_steps", type=int, default=None, help="Episode length cap (task default)"
+    )
     parser.add_argument(
         "--video_dir", default=None, help="Save videos of the first episodes"
     )
+    parser.add_argument("--n_videos", type=int, default=5)
 
     # Offline mode
     parser.add_argument("--repo_id", default=None, help="Override checkpoint repo_id")
     parser.add_argument("--root", default=None, help="Override checkpoint dataset root")
     parser.add_argument("--episodes", type=int, nargs="*", default=None)
-    parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--max_batches", type=int, default=None)
     parser.add_argument("--output_json", default=None, help="Save metrics to JSON")

@@ -4,19 +4,22 @@ A from-scratch reimplementation of [Diffusion Policy](https://diffusion-policy.c
 
 ## Demo
 
-<!-- TODO: add demo GIF — python scripts/summarize_trials.py --gif trials/<trial> --out docs/demo.gif -->
+![Diffusion Policy in simulation](docs/sim_demo.gif)
+
+Diffusion Policy in the shared Franka simulation ([robot-sim](../robot-sim)): robomimic Lift and Can,
+closed loop from 84×84 camera images. Real-robot demo pending (no real-robot data yet).
+
 
 ---
 
 ## TODO
 
-- [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment
-- [ ] **Checkpoints** — Release trained checkpoints with download link
+- [ ] **Demo** — Add demo GIF / video of real robot pick-and-place deployment (simulation demo above)
 - [x] **Offline evaluation** — `eval.py` scores predicted vs recorded action chunks on held-out episodes; `train.py --val_ratio` logs the same metrics to wandb during training
 - [x] **Simulation results** — robomimic Lift / Can in the shared Franka simulation, compared against ACT (see [Simulation](#simulation-franka-panda))
-- [ ] **Real-robot success rate** — run N trials with `inference.py --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
+- [ ] **Real-robot success rate** — run N trials with `inference.py --num_episodes N --record_dir` and fill in [Results](#results) with `scripts/summarize_trials.py` (offline action error is a regression check, not a success metric)
 
-Tooling for all three is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is training a model and running the trials on the robot.
+Tooling for the real-robot items is in place (see [Recording Trials](#recording-trials-demo--success-rate)); what remains is collecting real-robot data, training on it and running the trials.
 
 ---
 
@@ -118,7 +121,7 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   ├── policy/
 │   │   ├── image.py                # Image-conditioned diffusion policy
 │   │   └── loader.py               # Build policy from config, load checkpoints (EMA-aware)
-│   └── control.py                  # Real-robot scheduling: latency-aware chunk execution, gripper hysteresis
+│   └── control.py                  # Real-robot helpers: latency-aware chunk execution, gripper hysteresis, timing
 ├── training/
 │   └── workspace.py                # Training loop (LeRobot pipeline, EMA, val split, checkpoints)
 ├── evaluation/
@@ -138,7 +141,7 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   └── 03_image_policy_test.py     # Image policy integration test
 ├── train.py                        # Training entry point
 ├── inference.py                    # Real robot inference (UR3e + dual camera)
-├── eval.py                         # Evaluation entry point (offline / mock)
+├── eval.py                         # Evaluation entry point (offline / sim / mock)
 ├── setup.sh                        # One-click environment setup (uv + DP venv)
 └── pyproject.toml                  # Dependencies, ruff config, project metadata
 ```
@@ -168,11 +171,11 @@ Standard format: **480×480** images, no resize, batch 64. Dataset images and in
 ```bash
 python train.py \
     --repo_id local/my_dataset --root ./data/my_dataset \
-    --max_steps 30000 --batch 64 \
+    --max_steps 30000 --batch_size 64 \
     --val_ratio 0.05 \
     --device cuda --output_dir outputs/my_run \
     --save_every_steps 5000 --max_keep_checkpoints 5 \
-    --wandb_run_name my_run
+    --wandb --wandb_run_name my_run
 ```
 
 - `--max_steps 30000` — total gradient steps; LR warms up linearly for `--lr_warmup_steps` (default 500), then cosine-decays to lr/10 at exactly this step
@@ -193,7 +196,7 @@ python train.py \
     --max_steps 30000 --val_ratio 0.05 --device cuda --output_dir outputs/my_run
 ```
 
-Resuming continues the same wandb run. Pass the same `--val_ratio` / `--seed` as the original run so the train/val split is identical.
+With `--wandb`, resuming continues the same wandb run (wandb is off by default). Pass the same `--val_ratio` / `--seed` as the original run so the train/val split is identical.
 
 ### Evaluation
 
@@ -228,7 +231,7 @@ uv pip install --python DP/bin/python -e ../robot-sim
 
 # train (84×84 images, random crop 76×76, absolute 10-dim actions)
 python train.py --repo_id local/robomimic_lift_ph_abs_84 --root ../robot-sim/data/lerobot/lift_ph_abs_84 \
-    --max_steps 30000 --batch 64 --crop 76 76 --output_dir outputs/sim_lift
+    --max_steps 30000 --batch_size 64 --crop 76 76 --output_dir outputs/sim_lift
 
 # closed-loop evaluation: 50 seeded episodes, videos of the first 5
 python eval.py --checkpoint outputs/sim_lift/policy_final.pt --device cuda \
@@ -277,27 +280,27 @@ python inference.py --checkpoint outputs/policy_final.pt \
 - `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
 - `--max_steps` — control steps per trial (default: 800 = 40 s; the longest demo is ~33 s)
 - `--max_joint_vel` — per-joint velocity clamp in rad/s (default: 1.0)
-- `--record_dir` — record the trial (see below)
+- `--num_episodes`, `--record_dir` — several trials in one session (scene reset in between), each recorded (see below)
 - `--no_gripper`, `--cam_exterior`, `--cam_wrist` — run without gripper / custom camera serials
 
 Latency compensation: action slots that elapsed during inference are skipped, and execution always stops at the cycle boundary so delays never accumulate across cycles. If inference takes longer than a whole cycle, a warning is logged and the schedule is re-anchored.
 
 Sensors are read by background threads (one per camera, one for the gripper's serial stream), so `get_obs()` only copies the latest cached readings and never blocks the control loop; it refuses data older than 0.5 s. Each cycle logs `infer`, `obs_max` (get_obs time), `late_max` (how late an action was sent) and `age_max` (sensor age), and the run ends with the effective control rate and a timing summary. **Check these in a `--dry_run` before the first real run**: `obs_max` should stay well below the 50 ms period and the effective rate should match the dataset fps.
 
-Gripper convention: the training data uses **1 = open, 0 = closed** (every demonstration starts and ends open). Both the gripper state fed to the policy and the gripper action channel follow it.
+Gripper convention: the training data uses **1 = open, 0 = closed** (every demonstration starts and ends open). Both the gripper state fed to the policy and the gripper action channel follow it. Joint angles are in **degrees** in the data; `getActualQ()` radians are converted for the state and actions are converted back before `servoJ`. Before each trial the robot state is checked against the training range stored in the normalizer; dims far outside it are reported (catches deg/rad or gripper-polarity mismatches in a new dataset).
 
 ### Recording Trials (Demo & Success Rate)
 
 ```bash
-# Each run is saved to trials/trial_<timestamp>/ (exterior.mp4, wrist.mp4, steps.npz, meta.json);
-# at the end you are asked whether the trial succeeded
+# 20 trials; each is saved to trials/trial_<timestamp>/ (exterior.mp4, wrist.mp4,
+# steps.npz, meta.json) and the operator labels it success / failure afterwards
 python inference.py --checkpoint outputs/my_run/policy_final.pt --robot_ip 10.0.0.1 \
-    --record_dir trials/
+    --num_episodes 20 --record_dir trials/
 
 # Success rate per checkpoint with a 95% Wilson interval (dry runs and unanswered trials are skipped)
 python scripts/summarize_trials.py --record_dir trials/ --markdown trials/results.md
 
-# Side-by-side exterior | wrist demo GIF from one trial
+# Side-by-side camera demo GIF from one trial
 python scripts/summarize_trials.py --gif trials/trial_20260212_101500 --out demo.gif
 ```
 
