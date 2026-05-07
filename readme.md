@@ -95,3 +95,17 @@ diffusion_policy/
 ├── 
 ├──
 │   ├── 
+│   ├── 
+└── README.md
+```
+
+
+
+
+---
+
+## Acknowladgement
+
+Reference: [Chi et al., 2023 (RSS)](https://diffusion-policy.cs.columbia.edu/)
+
+Source repo: https://github.com/real-stanford/diffusion_policy
