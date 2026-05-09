@@ -1,32 +1,34 @@
 [project]
-name = "diffusion-policy-reimplement"
+name = "DP"
 version = "0.1.0"
+description = "diffusion-policy reimplement open source repo"
 requires-python = "==3.10.*"
 dependencies = [
     "torch",
     "torchvision",
-    "diffusers",
-    "zarr",
+    "diffusers",    # DDPM/DDIM scheduler reference
+    "zarr",         # dataset storafe
     "numpy",
-    "transformers",
-    "wandb",
-    "pymunk",
-    "pygame",
-    "matplotlib",
-    "einops",
-    "opencv-python",
+    "transformers", # get_consine_schedule_wiht_warmup
+    "wandb",        # experiment tracking
+    "pymunk",       # PushT physics simulation
+    "pygame",       # PushT rendering
+    "matplotlib",   # toy validation plats 
+    "einops",       # tensor reshaping utility
+    "opencv-python",# video logging
 ]
 
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu118", marker = "platform_system == 'Linux'" },
 ]
+
 torchvision = [
     { index = "pytorch-cu118", marker = "platform_system == 'Linux'" },
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu118"
+name ="pytorch-cu118"
 url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 

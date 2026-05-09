@@ -5,7 +5,3 @@ __pycache__/
 *.pyo
 wandb/
 checkpoints/
-experiments/toy_samples.png
-*.egg-info/
-dist/
-.DS_Store
