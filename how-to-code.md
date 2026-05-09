@@ -77,13 +77,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "stage1_ddpm",
-    "stage2_dataset",
-    "stage3_lowdim",
-    "stage4_vision",
-    "stage5_image_policy",
-    "stage6_training",
-    "stage7_eval",
+    "diffusion_policy",
+    "training",
+    "eval",
 ]
 ```
 
@@ -102,7 +98,7 @@ From now on, run all scripts with `uv run`:
 ```bash
 uv run python train.py
 uv run python test_integration.py
-uv run python stage1_ddpm/train_toy.py
+uv run python experiments/01_ddpm_toy.py
 ```
 
 Or activate the managed venv once per shell session:
@@ -113,19 +109,15 @@ python train.py   # then use python directly
 
 ### 0D. Set Up the Package Structure
 
-For cross-stage imports to work, add `__init__.py` to every stage directory:
+The `__init__.py` files and directory structure are already in the repo.
+After `uv pip install -e .`, all imports work immediately:
 
-```bash
-touch stage1_ddpm/__init__.py
-touch stage2_dataset/__init__.py
-touch stage3_lowdim/__init__.py
-touch stage4_vision/__init__.py
-touch stage5_image_policy/__init__.py
-touch stage6_training/__init__.py
-touch stage7_eval/__init__.py
+```python
+from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+# etc.
 ```
-
-Now `from stage1_ddpm.noise_scheduler import DDPMScheduler` works from anywhere.
 
 ### 0E. Download the PushT Dataset
 
@@ -217,35 +209,41 @@ If you cannot do all three, you do not own it yet.
 
 ---
 
-## Project Structure (build this as you go)
+## Project Structure
 
 ```
 diffusion-policy-reimplementation/
-├── stage1_ddpm/
-│   ├── noise_scheduler.py      ← your DDPM math
-│   ├── unet1d.py               ← your 1D U-Net
-│   └── train_toy.py            ← toy validation script
-├── stage2_dataset/
-│   ├── replay_buffer.py        ← Zarr reader
-│   ├── sampler.py              ← sequence sampling
-│   └── normalizer.py           ← linear normalizer
-├── stage3_lowdim/
-│   ├── policy.py               ← DiffusionUnetLowdimPolicy
-│   └── train.py                ← training loop
-├── stage4_vision/
-│   └── encoder.py              ← MultiImageObsEncoder
-├── stage5_image_policy/
-│   └── policy.py               ← DiffusionUnetHybridImagePolicy
-├── stage6_training/
-│   ├── ema.py                  ← EMAModel
-│   └── workspace.py            ← full training orchestrator
-└── stage7_eval/
-    ├── env_runner.py            ← vectorized rollout
-    └── eval.py                  ← evaluation entry point
+├── diffusion_policy/                ← main package
+│   ├── model/
+│   │   ├── diffusion/
+│   │   │   ├── scheduler.py         ← Stage 1A
+│   │   │   ├── unet1d.py            ← Stage 1B–D
+│   │   │   └── ema.py               ← Stage 6
+│   │   └── vision/
+│   │       └── encoder.py           ← Stage 4
+│   ├── dataset/
+│   │   ├── replay_buffer.py         ← Stage 2
+│   │   ├── sampler.py               ← Stage 2
+│   │   └── normalizer.py            ← Stage 2
+│   └── policy/
+│       ├── lowdim.py                ← Stage 3
+│       └── image.py                 ← Stage 5
+├── training/
+│   └── workspace.py                 ← Stage 6
+├── eval/
+│   └── runner.py                    ← Stage 7
+├── experiments/                     ← run these to validate each stage
+│   ├── 01_ddpm_toy.py
+│   ├── 02_dataset_test.py
+│   └── 03_lowdim_train.py
+├── train.py                         ← full pipeline entry point
+├── eval.py
+└── test_integration.py              ← run before full training (Stage 8)
 ```
 
-Build one directory at a time. Each stage has its own standalone train/validate
-script so you can verify it works before moving forward.
+The stage numbers live in this guide, not in directory names. Anyone reading the
+repo sees a normal ML project structure; anyone following this guide knows exactly
+which file maps to which stage.
 
 ---
 
@@ -284,7 +282,7 @@ Draw ᾱ_t as a function of t on paper. Understand that at t=0, x_t ≈ x_0
 
 ### 1A. Write the Noise Scheduler
 
-File: `stage1_ddpm/noise_scheduler.py`
+File: `diffusion_policy/model/diffusion/scheduler.py`
 
 Write this yourself before looking at any library code:
 
@@ -352,7 +350,7 @@ print(xt)  # should be close to 1.0 everywhere
 
 ### 1B. Write the Sinusoidal Embedding
 
-File: `stage1_ddpm/unet1d.py` (top of file)
+File: `diffusion_policy/model/diffusion/unet1d.py` (top of file)
 
 ```python
 import math
@@ -463,7 +461,7 @@ class ConditionalUnet1D(nn.Module):
 
 ### 1E. Validate on a Toy Dataset
 
-File: `stage1_ddpm/train_toy.py`
+File: `experiments/01_ddpm_toy.py`
 
 ```python
 """
@@ -670,7 +668,7 @@ class DiffusionUnetLowdimPolicy(nn.Module):
 ### Write a Standalone Training Script
 
 ```python
-# stage3_lowdim/train.py
+# experiments/03_lowdim_train.py
 # Train the lowdim policy on PushT state data
 # Run this and verify loss goes below 0.1 in ~1000 steps
 
@@ -865,7 +863,7 @@ class EMAModel:
 ### Full Training Loop
 
 ```python
-# stage6_training/workspace.py
+# training/workspace.py
 
 def train(cfg):
     # 1. Build dataset + dataloaders
@@ -972,11 +970,11 @@ After you write your own version of each component, compare side by side:
 
 ```bash
 # Compare your noise scheduler to the reference
-diff stage1_ddpm/noise_scheduler.py \
+diff diffusion_policy/model/diffusion/scheduler.py \
   ../diffusion_policy-main/diffusion_policy/model/diffusion/scheduling_ddpm.py
 
 # Compare your U-Net
-diff stage1_ddpm/unet1d.py \
+diff diffusion_policy/model/diffusion/unet1d.py \
   ../diffusion_policy-main/diffusion_policy/model/diffusion/conditional_unet1d.py
 ```
 
@@ -1027,27 +1025,27 @@ actually run.**
 Every file should import from your own stages only (except PushTImageEnv):
 
 ```python
-# stage3_lowdim/policy.py
-from stage1_ddpm.noise_scheduler import DDPMScheduler
-from stage1_ddpm.unet1d import ConditionalUnet1D
-from stage2_dataset.normalizer import LinearNormalizer
+# diffusion_policy/policy/lowdim.py
+from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.dataset.normalizer import LinearNormalizer
 
-# stage5_image_policy/policy.py
-from stage1_ddpm.noise_scheduler import DDPMScheduler
-from stage1_ddpm.unet1d import ConditionalUnet1D
-from stage2_dataset.normalizer import LinearNormalizer
-from stage4_vision.encoder import MultiImageObsEncoder
+# diffusion_policy/policy/image.py
+from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 
-# stage6_training/workspace.py
-from stage2_dataset.replay_buffer import ReplayBuffer
-from stage2_dataset.sampler import SequenceSampler
-from stage2_dataset.normalizer import LinearNormalizer
-from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
-from stage6_training.ema import EMAModel
+# training/workspace.py
+from diffusion_policy.dataset.replay_buffer import ReplayBuffer
+from diffusion_policy.dataset.sampler import SequenceSampler
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+from diffusion_policy.policy.image import DiffusionUnetHybridImagePolicy
+from diffusion_policy.model.diffusion.ema import EMAModel
 
-# stage7_eval/env_runner.py
+# eval/runner.py
 from diffusion_policy.env.pusht.pusht_image_env import PushTImageEnv  # reference only
-from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+from diffusion_policy.policy.image import DiffusionUnetHybridImagePolicy
 ```
 
 ### 8B. Single Entry Point
@@ -1061,15 +1059,15 @@ import copy
 from torch.utils.data import DataLoader
 from transformers import get_cosine_schedule_with_warmup
 
-from stage2_dataset.replay_buffer import ReplayBuffer
-from stage2_dataset.sampler import SequenceSampler
-from stage2_dataset.normalizer import LinearNormalizer
-from stage4_vision.encoder import MultiImageObsEncoder
-from stage1_ddpm.unet1d import ConditionalUnet1D
-from stage1_ddpm.noise_scheduler import DDPMScheduler
-from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
-from stage6_training.ema import EMAModel
-from stage6_training.workspace import train   # your train() function
+from diffusion_policy.dataset.replay_buffer import ReplayBuffer
+from diffusion_policy.dataset.sampler import SequenceSampler
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
+from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.policy.image import DiffusionUnetHybridImagePolicy
+from diffusion_policy.model.diffusion.ema import EMAModel
+from training.workspace import train   # your train() function
 
 # Config — change these to match your setup
 DATA_PATH  = 'data/pusht_cchi_v7_replay.zarr'
@@ -1100,11 +1098,11 @@ tiny smoke test:
 ```python
 # test_integration.py — run this first, takes < 30 seconds
 import torch
-from stage1_ddpm.noise_scheduler import DDPMScheduler
-from stage1_ddpm.unet1d import ConditionalUnet1D
-from stage2_dataset.normalizer import LinearNormalizer
-from stage4_vision.encoder import MultiImageObsEncoder
-from stage5_image_policy.policy import DiffusionUnetHybridImagePolicy
+from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
+from diffusion_policy.model.diffusion.unet1d import ConditionalUnet1D
+from diffusion_policy.dataset.normalizer import LinearNormalizer
+from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
+from diffusion_policy.policy.image import DiffusionUnetHybridImagePolicy
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
