@@ -21,7 +21,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Lint
-        run: uvx ruff check
+        run: uvx ruff@0.15.5 check  # keep in sync with .pre-commit-config.yaml
 
       - name: Test
         run: uv run pytest tests/ -v --tb=short

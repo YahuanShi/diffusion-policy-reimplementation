@@ -87,6 +87,7 @@ def convert(
     image_keys=("exterior_image_1_left", "wrist_image_left"),
     task_description="Pick and place",
     vcodec="auto",
+    overwrite=False,
 ):
 
     episode_files = get_episode_files(input_dir)
@@ -102,6 +103,12 @@ def convert(
 
     output_path = Path(root)
     if output_path.exists():
+        if not overwrite:
+            raise SystemExit(
+                f"{output_path} already exists. Pass --overwrite to delete and "
+                "re-create it, or choose another --root."
+            )
+        print(f"Deleting existing {output_path} (--overwrite)")
         shutil.rmtree(output_path)
 
     ds = LeRobotDataset.create(
@@ -171,6 +178,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--task", default="Pick and place", help="Task description")
     parser.add_argument("--vcodec", default="auto", help="Video codec")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete --root first if it already exists",
+    )
     args = parser.parse_args()
 
     convert(
@@ -182,4 +194,5 @@ if __name__ == "__main__":
         image_keys=tuple(args.image_keys),
         task_description=args.task,
         vcodec=args.vcodec,
+        overwrite=args.overwrite,
     )

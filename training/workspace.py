@@ -13,6 +13,11 @@ Training loop:
       3. Update: optimizer.step() + lr_scheduler.step() + ema.step()
   Checkpoints saved every save_every_steps steps and every checkpoint_every epochs.
 
+LR schedule: linear warmup for lr_warmup_steps, then cosine decay to lr/10.
+
+Checkpoints store `policy_config` (architecture + image preprocessing + dataset fps) so
+eval.py / inference.py rebuild the exact same policy — see diffusion_policy/policy/checkpoint.py.
+
 Usage:
   python train.py --repo_id lerobot/pusht --epochs 3000
   python train.py --repo_id local/my_data --root ./data --device cuda
@@ -20,8 +25,10 @@ Usage:
 
 import glob
 import json
+import math
 import os
 import random
+import re
 import time
 import torch
 import wandb
@@ -30,9 +37,36 @@ from torch.utils.data import DataLoader
 
 from diffusion_policy.model.diffusion.scheduler import DDPMScheduler
 from diffusion_policy.model.diffusion.ema import EMAModel
-from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
 from diffusion_policy.dataset.lerobot_wrapper import LeRobotImageDataset
-from diffusion_policy.policy.image import DiffusionUnetImagePolicy
+from diffusion_policy.policy.checkpoint import build_policy
+
+
+def make_lr_lambda(warmup_steps, total_steps, min_ratio=0.1):
+    """LR multiplier: linear warmup 0 → 1, then cosine 1 → min_ratio, flat afterwards."""
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+        return min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+
+    return lr_lambda
+
+
+def prune_step_checkpoints(output_dir, max_keep):
+    """Keep only the newest max_keep checkpoint_step*.pt, ordered by step number.
+
+    Sorting by filename would put step10000 before step5000 and delete the wrong files.
+    """
+
+    def step_of(path):
+        return int(re.search(r"checkpoint_step(\d+)\.pt$", path).group(1))
+
+    step_ckpts = sorted(
+        glob.glob(os.path.join(output_dir, "checkpoint_step*.pt")), key=step_of
+    )
+    for old in step_ckpts[:-max_keep]:
+        os.remove(old)
 
 
 def train_image(
@@ -87,6 +121,7 @@ def train_image(
         "n_action_steps": n_action_steps,
         "num_inference_steps": num_inference_steps,
         "lr": lr,
+        "lr_warmup_steps": lr_warmup_steps,
         "ema_power": ema_power,
         "checkpoint_every": checkpoint_every,
         "save_every_steps": save_every_steps,
@@ -131,26 +166,23 @@ def train_image(
 
     normalizer = dataset.get_normalizer()
 
-    encoder = MultiImageObsEncoder(
-        shape_meta,
-        use_group_norm=use_group_norm,
-        share_rgb_model=share_rgb_model,
-        resize_shape=resize_shape,
-        crop_shape=crop_shape,
-        random_crop=(crop_shape is not None),
-    )
-    scheduler = DDPMScheduler(num_train_timesteps=100)
-    policy = DiffusionUnetImagePolicy(
-        obs_encoder=encoder,
-        noise_scheduler=scheduler,
-        shape_meta=shape_meta,
-        horizon=horizon,
-        n_obs_steps=n_obs_steps,
-        n_action_steps=n_action_steps,
-        num_inference_steps=num_inference_steps,
-        diffusion_step_embed_dim=diffusion_step_embed_dim,
-        down_dims=list(down_dims),
-    )
+    # Everything needed to rebuild this exact policy at eval/inference time
+    policy_config = {
+        "horizon": horizon,
+        "n_obs_steps": n_obs_steps,
+        "n_action_steps": n_action_steps,
+        "down_dims": list(down_dims),
+        "diffusion_step_embed_dim": diffusion_step_embed_dim,
+        "use_group_norm": use_group_norm,
+        "share_rgb_model": share_rgb_model,
+        "resize_shape": list(resize_shape) if resize_shape else None,
+        "crop_shape": list(crop_shape) if crop_shape else None,
+        "num_train_timesteps": 100,
+        "fps": dataset.ds.fps,
+    }
+
+    scheduler = DDPMScheduler(num_train_timesteps=policy_config["num_train_timesteps"])
+    policy = build_policy(shape_meta, policy_config, scheduler, num_inference_steps)
     policy.set_normalizer(normalizer)
     policy.to(device)
 
@@ -158,8 +190,8 @@ def train_image(
 
     optimizer = torch.optim.AdamW(policy.parameters(), lr=lr, weight_decay=1e-6)
     total_steps = len(dataloader) * num_epochs
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_steps, eta_min=lr / 10
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, make_lr_lambda(lr_warmup_steps, total_steps)
     )
 
     n_params = sum(p.numel() for p in policy.parameters())
@@ -167,24 +199,32 @@ def train_image(
 
     start_epoch = 0
     global_step = 0
+    wandb_run_id = None
     if resume_checkpoint is not None:
-        ckpt = torch.load(resume_checkpoint, map_location=device)
+        ckpt = torch.load(resume_checkpoint, map_location=device, weights_only=False)
         policy.load_state_dict(ckpt["policy_state_dict"])
         ema.load_state_dict(ckpt["ema_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt["epoch"] + 1
         global_step = ckpt["global_step"]
-        for _ in range(global_step):
-            lr_scheduler.step()
+        if "lr_scheduler_state_dict" in ckpt:
+            lr_scheduler.load_state_dict(ckpt["lr_scheduler_state_dict"])
+        else:  # older checkpoints: replay the schedule
+            for _ in range(global_step):
+                lr_scheduler.step()
+        # A step checkpoint saved mid-epoch: redo that epoch instead of skipping its rest
+        epoch_complete = ckpt.get("epoch_complete", global_step % len(dataloader) == 0)
+        start_epoch = ckpt["epoch"] + 1 if epoch_complete else ckpt["epoch"]
+        wandb_run_id = ckpt.get("wandb_run_id")
         print(
             f"Resumed from {resume_checkpoint} (epoch {start_epoch}, step {global_step})"
         )
 
     print(f"Training for {num_epochs} epochs ({total_steps} steps)")
 
-    wandb.init(
+    run = wandb.init(
         project="Diffusion-Policy",
         name=wandb_run_name,
+        id=wandb_run_id,  # continue the same wandb run when resuming
         config={
             "mode": "image",
             "repo_id": repo_id,
@@ -196,23 +236,44 @@ def train_image(
             "n_obs_steps": n_obs_steps,
             "n_action_steps": n_action_steps,
             "lr": lr,
+            "lr_warmup_steps": lr_warmup_steps,
             "down_dims": list(down_dims),
             "resize_shape": resize_shape,
             "crop_shape": crop_shape,
             "n_params": n_params,
             "obs_keys": list(shape_meta["obs"].keys()),
             "action_dim": shape_meta["action"]["shape"][0],
+            "fps": dataset.ds.fps,
             "seed": seed,
         },
         resume="allow",
     )
+
+    def save_checkpoint(path, epoch, epoch_complete):
+        torch.save(
+            {
+                "epoch": epoch,
+                "epoch_complete": epoch_complete,
+                "global_step": global_step,
+                "policy_state_dict": policy.state_dict(),
+                "ema_state_dict": ema.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                "normalizer_state_dict": normalizer.state_dict(),
+                "shape_meta": shape_meta,
+                "policy_config": policy_config,
+                "wandb_run_id": run.id,
+            },
+            path,
+        )
+        print(f"  saved {path}")
 
     for epoch in range(start_epoch, num_epochs):
         policy.train()
         epoch_losses = []
         epoch_start = time.time()
 
-        for batch in dataloader:
+        for batch_idx, batch in enumerate(dataloader):
             batch_gpu = {k: v.to(device) for k, v in batch.items()}
             loss = policy.compute_loss(batch_gpu)
             loss.backward()
@@ -237,24 +298,13 @@ def train_image(
             )
 
             if save_every_steps > 0 and global_step % save_every_steps == 0:
-                ckpt = {
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "policy_state_dict": policy.state_dict(),
-                    "ema_state_dict": ema.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "normalizer_state_dict": normalizer.state_dict(),
-                    "shape_meta": shape_meta,
-                }
-                path = os.path.join(output_dir, f"checkpoint_step{global_step}.pt")
-                torch.save(ckpt, path)
-                print(f"  saved {path}")
+                save_checkpoint(
+                    os.path.join(output_dir, f"checkpoint_step{global_step}.pt"),
+                    epoch,
+                    epoch_complete=(batch_idx == len(dataloader) - 1),
+                )
                 if max_keep_checkpoints > 0:
-                    step_ckpts = sorted(
-                        glob.glob(os.path.join(output_dir, "checkpoint_step*.pt"))
-                    )
-                    for old in step_ckpts[:-max_keep_checkpoints]:
-                        os.remove(old)
+                    prune_step_checkpoints(output_dir, max_keep_checkpoints)
 
         epoch_time = time.time() - epoch_start
         avg_loss = np.mean(epoch_losses)
@@ -276,18 +326,11 @@ def train_image(
             )
 
         if (epoch + 1) % checkpoint_every == 0 or epoch == num_epochs - 1:
-            ckpt = {
-                "epoch": epoch,
-                "global_step": global_step,
-                "policy_state_dict": policy.state_dict(),
-                "ema_state_dict": ema.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "normalizer_state_dict": normalizer.state_dict(),
-                "shape_meta": shape_meta,
-            }
-            path = os.path.join(output_dir, f"checkpoint_epoch{epoch + 1}.pt")
-            torch.save(ckpt, path)
-            print(f"  saved {path}")
+            save_checkpoint(
+                os.path.join(output_dir, f"checkpoint_epoch{epoch + 1}.pt"),
+                epoch,
+                epoch_complete=True,
+            )
 
     ema.copy_to(policy)
     final_path = os.path.join(output_dir, "policy_final.pt")
@@ -296,6 +339,7 @@ def train_image(
             "policy_state_dict": policy.state_dict(),
             "normalizer_state_dict": normalizer.state_dict(),
             "shape_meta": shape_meta,
+            "policy_config": policy_config,
         },
         final_path,
     )

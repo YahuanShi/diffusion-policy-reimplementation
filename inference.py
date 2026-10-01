@@ -30,10 +30,7 @@ import cv2
 import numpy as np
 import torch
 
-from diffusion_policy.model.diffusion.scheduler import DDIMScheduler
-from diffusion_policy.model.vision.encoder import MultiImageObsEncoder
-from diffusion_policy.dataset.normalizer import LinearNormalizer
-from diffusion_policy.policy.image import DiffusionUnetImagePolicy
+from diffusion_policy.policy.checkpoint import load_policy
 
 log = logging.getLogger(__name__)
 
@@ -325,41 +322,7 @@ class UR3eRobot:
         log.info("[UR3e] Stopped.")
 
 
-# ══════════════════════════════ Policy Loader ══════════════════════════════
-
-
-def load_policy(
-    checkpoint_path, device="cuda", resize_shape=None, num_inference_steps=16
-):
-    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    shape_meta = payload["shape_meta"]
-
-    normalizer = LinearNormalizer()
-    normalizer.load_state_dict(payload["normalizer_state_dict"])
-
-    encoder = MultiImageObsEncoder(
-        shape_meta,
-        use_group_norm=True,
-        resize_shape=resize_shape,
-    )
-    # DDIM at inference: 16 deterministic steps instead of 100 DDPM steps (~6x faster)
-    scheduler = DDIMScheduler(num_train_timesteps=100)
-    policy = DiffusionUnetImagePolicy(
-        obs_encoder=encoder,
-        noise_scheduler=scheduler,
-        shape_meta=shape_meta,
-        horizon=16,
-        n_obs_steps=2,
-        n_action_steps=8,
-        num_inference_steps=num_inference_steps,
-        diffusion_step_embed_dim=256,
-        down_dims=[256, 512, 1024],
-    )
-    policy.set_normalizer(normalizer)
-    policy.load_state_dict(payload["policy_state_dict"])
-    policy.to(device)
-    policy.eval()
-    return policy, shape_meta
+# ══════════════════════════════ Visualization ══════════════════════════════
 
 
 def make_vis_frame(obs, action, step, inference_ms):
@@ -416,9 +379,33 @@ def build_obs_dict(obs_history, device="cuda"):
     }
 
 
+def check_obs_compatible(shape_meta, obs_dict):
+    """
+    Fail fast if the robot's observations don't match what the policy was trained on.
+
+    Catches e.g. a dataset converted with --state_keys eef_pose qpos (13-dim state) while
+    the robot provides qpos + gripper (7-dim), or differently named camera keys.
+    """
+    expected = shape_meta["obs"]
+    if set(expected) != set(obs_dict):
+        raise ValueError(
+            f"Observation keys mismatch.\n  policy expects: {sorted(expected)}\n"
+            f"  robot provides: {sorted(obs_dict)}"
+        )
+    for key, attr in expected.items():
+        got = tuple(obs_dict[key].shape[2:])  # drop (B, T)
+        want = tuple(attr["shape"])
+        # Image H/W may differ (the encoder resizes); channels and low-dim sizes may not
+        if attr.get("type") == "rgb":
+            got, want = got[:1], want[:1]
+        if got != want:
+            raise ValueError(f"'{key}': policy expects shape {want}, robot gives {got}")
+
+
 def run_inference(
     policy,
     robot,
+    shape_meta,
     device="cuda",
     n_obs_steps=2,
     n_action_steps=8,
@@ -437,10 +424,13 @@ def run_inference(
         obs_history.append(robot.get_obs())
         time.sleep(dt)
 
+    obs_dict = build_obs_dict(obs_history, device)
+    check_obs_compatible(shape_meta, obs_dict)
+
     # One warm-up inference pass to trigger CUDA kernel compilation
     log.info("Warming up policy inference...")
     with torch.no_grad():
-        policy.predict_action(build_obs_dict(obs_history, device))
+        policy.predict_action(obs_dict)
     log.info(
         f"Ready. freq={frequency}Hz  steps_per_inference={steps_per_inference}  "
         f"max_steps={max_steps}  dry_run={dry_run}"
@@ -467,8 +457,15 @@ def run_inference(
 
             n_exec = min(steps_per_inference, n_action_steps, max_steps - step)
             for i in range(n_exec):
+                # Skip actions whose time slot already ended (inference overran the
+                # cycle) — executing them late would replay a stale trajectory.
+                t_slot = t_start + (iter_idx + i) * dt
+                if time.monotonic() > t_slot + dt:
+                    log.warning(f"step {step:>4}: skipped stale action {i}")
+                    step += 1
+                    continue
                 # Wait until this action's scheduled time slot
-                precise_wait(t_start + (iter_idx + i) * dt)
+                precise_wait(t_slot)
 
                 if not dry_run:
                     robot.apply_action(actions[i])
@@ -495,8 +492,6 @@ def run_inference(
         log.info("Stopped by user.")
     finally:
         cv2.destroyAllWindows()
-        if not dry_run:
-            robot.stop()
         log.info(f"Inference ended at step {step}.")
 
 
@@ -508,7 +503,18 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--robot_ip", required=True)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--frequency", type=int, default=10)
+    parser.add_argument(
+        "--frequency",
+        type=int,
+        default=None,
+        help="Control rate in Hz (default: the training dataset's fps). Must match "
+        "the dataset fps — obs spacing and per-step actions were learned at that rate.",
+    )
+    parser.add_argument(
+        "--allow_fps_mismatch",
+        action="store_true",
+        help="Run even if --frequency differs from the dataset fps",
+    )
     parser.add_argument(
         "--steps_per_inference",
         type=int,
@@ -522,12 +528,27 @@ def main():
         help="DDIM denoising steps at inference (default: 16)",
     )
     parser.add_argument("--max_steps", type=int, default=500)
-    parser.add_argument("--resize", type=int, nargs=2, default=None, metavar=("H", "W"))
+    parser.add_argument(
+        "--resize",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("H", "W"),
+        help="Only for legacy checkpoints without policy_config",
+    )
+    parser.add_argument(
+        "--crop",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("H", "W"),
+        help="Only for legacy checkpoints without policy_config",
+    )
     parser.add_argument("--no_gripper", action="store_true")
     parser.add_argument(
         "--dry_run",
         action="store_true",
-        help="Run full pipeline without sending robot commands",
+        help="Run full pipeline without moving the robot or gripper (no homing either)",
     )
     parser.add_argument(
         "--cam_exterior",
@@ -544,37 +565,63 @@ def main():
     logging.basicConfig(level=logging.INFO, force=True)
 
     log.info("Loading policy...")
-    policy, shape_meta = load_policy(
+    policy, shape_meta, cfg = load_policy(
         args.checkpoint,
         args.device,
-        resize_shape=tuple(args.resize) if args.resize else None,
         num_inference_steps=args.num_inference_steps,
+        resize_shape=args.resize,
+        crop_shape=args.crop,
     )
     log.info(
         f"Policy loaded. Action dim: {shape_meta['action']['shape'][0]}, "
-        f"DDIM steps: {args.num_inference_steps}"
+        f"DDIM steps: {args.num_inference_steps}, dataset fps: {cfg['fps']}"
     )
+
+    frequency = args.frequency
+    if frequency is None:
+        if cfg["fps"] is None:
+            parser.error("checkpoint does not record dataset fps; pass --frequency")
+        frequency = cfg["fps"]
+    elif cfg["fps"] is not None and frequency != cfg["fps"]:
+        msg = (
+            f"--frequency {frequency} differs from the dataset fps {cfg['fps']}: "
+            "the robot would move at the wrong speed and obs frames would be "
+            "spaced differently than in training."
+        )
+        if not args.allow_fps_mismatch:
+            parser.error(msg + " Pass --allow_fps_mismatch to run anyway.")
+        log.warning(msg)
 
     log.info(f"Connecting to UR3e at {args.robot_ip}...")
     robot = UR3eRobot(
         robot_ip=args.robot_ip,
-        frequency=args.frequency,
+        frequency=frequency,
         use_gripper=not args.no_gripper,
         cam_serial_exterior=args.cam_exterior,
         cam_serial_wrist=args.cam_wrist,
     )
 
-    robot.home()
+    try:
+        if args.dry_run:
+            log.info("[dry run] Skipping homing — robot and gripper will not move.")
+        else:
+            robot.home()
 
-    run_inference(
-        policy=policy,
-        robot=robot,
-        device=args.device,
-        frequency=args.frequency,
-        steps_per_inference=args.steps_per_inference,
-        max_steps=args.max_steps,
-        dry_run=args.dry_run,
-    )
+        run_inference(
+            policy=policy,
+            robot=robot,
+            shape_meta=shape_meta,
+            device=args.device,
+            n_obs_steps=cfg["n_obs_steps"],
+            n_action_steps=cfg["n_action_steps"],
+            frequency=frequency,
+            steps_per_inference=args.steps_per_inference,
+            max_steps=args.max_steps,
+            dry_run=args.dry_run,
+        )
+    finally:
+        # Always release cameras and serial port; stops no motion in a dry run
+        robot.stop()
 
 
 if __name__ == "__main__":

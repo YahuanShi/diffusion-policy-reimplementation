@@ -81,9 +81,11 @@ class DDPMScheduler:
         )
         self.posterior_variance[0] = 0.0  # no noise at t=0
 
-        self.timesteps = torch.arange(num_train_timesteps - 1, -1, -1)
+        self.set_timesteps(num_train_timesteps)
 
-    def add_noise(self, x0: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+    def add_noise(
+        self, x0: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
         """Forward process: x_t = sqrt(alpha_bar_t) * x0 + sqrt(1-alpha_bar_t) * eps"""
         t_cpu = timesteps.cpu()
         sqrt_alpha_prod = self.sqrt_alphas_cumprod[t_cpu].to(x0.device)
@@ -116,9 +118,16 @@ class DDPMScheduler:
         Clipping is critical: prevents divergence during reverse process, especially early in training.
         """
         device = x_t.device
+        t = int(t)
         alpha_prod_t = self.alphas_cumprod[t].to(device)
-        alpha_prod_t_prev = self.alphas_cumprod_prev[t].to(device)
+        # alpha_bar of the *next scheduled* timestep. Equals alphas_cumprod_prev[t]
+        # when all T steps are used, but differs once set_timesteps() subsamples.
+        alpha_prod_t_prev = self._alpha_prev[self._t_idx[t]].to(device)
         beta_prod_t = 1.0 - alpha_prod_t
+        beta_prod_t_prev = 1.0 - alpha_prod_t_prev
+        # Effective alpha/beta of the (possibly multi-step) jump t -> t_prev
+        current_alpha_t = alpha_prod_t / alpha_prod_t_prev
+        current_beta_t = 1.0 - current_alpha_t
 
         # Step 1: recover x0_hat from eps_pred
         pred_x0 = (x_t - beta_prod_t.sqrt() * eps_pred) / alpha_prod_t.sqrt()
@@ -128,30 +137,31 @@ class DDPMScheduler:
             pred_x0 = pred_x0.clamp(-clip_range, clip_range)
 
         # Step 3: posterior mean = coeff1 * x0_hat + coeff2 * x_t
-        pred_x0_coeff = (
-            alpha_prod_t_prev.sqrt() * self.betas[t].to(device) / beta_prod_t
-        )
-        current_sample_coeff = (
-            self.alphas[t].to(device).sqrt() * (1.0 - alpha_prod_t_prev) / beta_prod_t
-        )
+        pred_x0_coeff = alpha_prod_t_prev.sqrt() * current_beta_t / beta_prod_t
+        current_sample_coeff = current_alpha_t.sqrt() * beta_prod_t_prev / beta_prod_t
         pred_prev_mean = pred_x0_coeff * pred_x0 + current_sample_coeff * x_t
 
-        # Step 4: add posterior variance noise (none at t=0)
+        # Step 4: add posterior variance noise (none at the final step)
         if t > 0:
-            variance = self.posterior_variance[t].to(device).sqrt() * torch.randn_like(
-                x_t
-            )
+            variance = beta_prod_t_prev / beta_prod_t * current_beta_t
+            noise = variance.sqrt() * torch.randn_like(x_t)
         else:
-            variance = torch.zeros_like(x_t)
+            noise = torch.zeros_like(x_t)
 
-        prev_sample = pred_prev_mean + variance
+        prev_sample = pred_prev_mean + noise
         return SimpleNamespace(prev_sample=prev_sample)
 
     def set_timesteps(self, num_inference_steps):
         """Uniformly subsample T-1 → 0 over num_inference_steps steps."""
-        self.timesteps = torch.linspace(
-            self.num_train_timesteps - 1, 0, num_inference_steps
-        ).long()
+        T = self.num_train_timesteps
+        self.timesteps = torch.linspace(T - 1, 0, num_inference_steps).long()
+        # alpha_cumprod for the step *preceding* each scheduled t
+        prev_ts = torch.cat([self.timesteps[1:], torch.zeros(1, dtype=torch.long)])
+        self._alpha_prev = self.alphas_cumprod[prev_ts].clone()
+        self._alpha_prev[-1] = (
+            1.0  # alpha_{t=-1} = 1 by convention (fully clean signal)
+        )
+        self._t_idx = {int(t): i for i, t in enumerate(self.timesteps)}
 
 
 class DDIMScheduler(DDPMScheduler):
@@ -165,17 +175,6 @@ class DDIMScheduler(DDPMScheduler):
     No stochastic noise term → 16 steps suffice instead of 100, ~6x faster at inference.
     Fully compatible with DDPM checkpoints — training is unchanged.
     """
-
-    def set_timesteps(self, num_inference_steps):
-        T = self.num_train_timesteps
-        self.timesteps = torch.linspace(T - 1, 0, num_inference_steps).long()
-        # alpha_cumprod for the step *preceding* each scheduled t
-        prev_ts = torch.cat([self.timesteps[1:], torch.zeros(1, dtype=torch.long)])
-        self._alpha_prev = self.alphas_cumprod[prev_ts].clone()
-        self._alpha_prev[-1] = (
-            1.0  # alpha_{t=-1} = 1 by convention (fully clean signal)
-        )
-        self._t_idx = {int(t): i for i, t in enumerate(self.timesteps)}
 
     def step(self, eps_pred, t, x_t, clip_sample=True, clip_range=1.0):
         device = x_t.device

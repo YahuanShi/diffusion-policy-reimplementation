@@ -114,15 +114,17 @@ The original paper also supports a Transformer backbone with cross-attention. Th
 │   │   ├── normalizer.py           # Linear normalizer (limits/gaussian modes)
 │   │   └── lerobot_wrapper.py      # LeRobot dataset wrapper for image policy
 │   └── policy/
-│       └── image.py                # Image-conditioned diffusion policy
+│       ├── image.py                # Image-conditioned diffusion policy
+│       └── checkpoint.py           # Build policy from config, load checkpoints (EMA-aware)
 ├── training/
 │   └── workspace.py                # Training workspace (LeRobot pipeline)
 ├── evaluation/
 │   └── runner.py                   # Evaluation runner with action chunking loop
-├── tests/
-│   └── test_integration.py         # End-to-end pipeline smoke test
+├── tests/                          # pytest: scheduler, EMA, normalizer, checkpoint, integration
 ├── scripts/
-│   └── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
+│   ├── hdf5_to_lerobot.py          # HDF5 → LeRobot v3 format converter
+│   ├── visualize_dataset.py        # Dataset statistics plots
+│   └── benchmark_inference.py      # DDIM/DDPM latency benchmark
 ├── experiments/                     # Validation scripts
 │   ├── 01_ddpm_toy.py              # DDPM on toy 1D data
 │   ├── 02_encoder_test.py          # Vision encoder unit test
@@ -168,7 +170,9 @@ python train.py \
 - `--save_every_steps 5000` — save a step checkpoint every 5000 gradient steps; keep only the latest `--max_keep_checkpoints` (default: 3) to save disk space
 - `--checkpoint_every 100` — additionally save an epoch checkpoint every 100 epochs
 
-Wandb logging is always enabled (project: `Diffusion-Policy`). Checkpoints and `config.json` are saved to `output_dir`.
+The learning rate warms up linearly over 500 steps, then follows a cosine decay to `lr/10`.
+
+Wandb logging is always enabled (project: `Diffusion-Policy`). Checkpoints and `config.json` are saved to `output_dir`. Every checkpoint also stores `policy_config` (architecture, `--resize`/`--crop`, dataset fps), so `eval.py` and `inference.py` rebuild exactly the trained preprocessing — no need to repeat those flags. Step/epoch checkpoints are evaluated with their EMA weights.
 
 ### Resume Training
 ```bash
@@ -178,6 +182,8 @@ python train.py \
     --epochs 3000 --device cuda
 ```
 
+Resuming restores the optimizer, LR schedule and EMA state and continues the same wandb run. Resuming from a step checkpoint saved mid-epoch re-runs that epoch.
+
 ### Real Robot Inference (UR3e)
 
 Hardware: UR3e + Weiss CRG 30-050 gripper + dual Intel RealSense cameras.
@@ -186,14 +192,14 @@ Hardware: UR3e + Weiss CRG 30-050 gripper + dual Intel RealSense cameras.
 # Install robot dependencies
 pip install ur-rtde pyrealsense2 pyserial opencv-python
 
-# Dry run (verify full pipeline without sending robot commands)
+# Dry run (cameras + policy only; robot and gripper never move, no homing)
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 --dry_run
 
 # Real deployment
 python inference.py --checkpoint outputs/policy_final.pt \
     --robot_ip 10.0.0.1 \
-    --frequency 10 --steps_per_inference 6 --num_inference_steps 16 \
+    --steps_per_inference 6 --num_inference_steps 16 \
     --max_steps 500
 
 # Without gripper / custom camera serials
@@ -202,8 +208,11 @@ python inference.py --checkpoint outputs/policy_final.pt \
     --cam_exterior 105422061000 --cam_wrist 352122273671
 ```
 
+- `--frequency` — control rate; defaults to the training dataset's fps. A different value is refused (unless `--allow_fps_mismatch`), since actions and obs spacing were learned at the dataset rate
 - `--steps_per_inference` — actions to execute per inference cycle (default: 6)
 - `--num_inference_steps` — DDIM denoising steps (default: 16, ~6× faster than DDPM-100)
+- At startup, the robot's observation keys and state dimension are checked against the checkpoint (e.g. a dataset converted with `--state_keys eef_pose qpos` has a 13-dim state, the robot provides 7)
+- Actions whose time slot has already passed (inference overran the cycle) are skipped instead of executed late
 
 ### Evaluation (Mock)
 ```bash
@@ -215,8 +224,10 @@ python eval.py --checkpoint outputs/policy_final.pt --device cuda --mock
 python scripts/hdf5_to_lerobot.py \
     --input /path/to/hdf5_episodes \
     --repo_id local/my_dataset --root ./data/my_dataset \
-    --fps 20 --state_keys qpos
+    --fps 10 --state_keys qpos
 ```
+
+`--fps` must match the control rate you deploy at. An existing `--root` is only replaced when you pass `--overwrite`.
 
 ---
 

@@ -60,7 +60,9 @@ def test_ddim_deterministic():
         eps = torch.randn_like(traj_b)
         traj_b = scheduler.step(eps, t, traj_b).prev_sample
 
-    assert torch.allclose(traj_a, traj_b), "DDIM must be deterministic given same inputs"
+    assert torch.allclose(traj_a, traj_b), (
+        "DDIM must be deterministic given same inputs"
+    )
 
 
 def test_ddpm_oracle_reconstructs_x0():
@@ -74,7 +76,9 @@ def test_ddpm_oracle_reconstructs_x0():
     # pred_x0 = (x_t - sqrt(1 - alpha_bar_t) * eps) / sqrt(alpha_bar_t)
     alpha_t = scheduler.alphas_cumprod[t]
     pred_x0 = (xt - (1 - alpha_t).sqrt() * eps) / alpha_t.sqrt()
-    assert torch.allclose(pred_x0, x0, atol=1e-5), "Oracle eps must reconstruct x0 exactly"
+    assert torch.allclose(pred_x0, x0, atol=1e-5), (
+        "Oracle eps must reconstruct x0 exactly"
+    )
 
 
 def test_ddpm_ddim_compatible_shapes():
@@ -87,3 +91,42 @@ def test_ddpm_ddim_compatible_shapes():
             result = s.step(eps, t, x)
             x = result.prev_sample
         assert x.shape == (2, 16, 4)
+
+
+def test_ddpm_full_schedule_matches_closed_form_posterior():
+    # With all T steps, the step must reduce to the textbook DDPM posterior.
+    scheduler = DDPMScheduler(num_train_timesteps=100)
+    x_t = torch.randn(2, 16, 2)
+    eps = torch.randn_like(x_t)
+    t = 50
+    a_t, a_prev = scheduler.alphas_cumprod[t], scheduler.alphas_cumprod[t - 1]
+    pred_x0 = ((x_t - (1 - a_t).sqrt() * eps) / a_t.sqrt()).clamp(-1, 1)
+    expected_mean = (
+        a_prev.sqrt() * scheduler.betas[t] / (1 - a_t) * pred_x0
+        + scheduler.alphas[t].sqrt() * (1 - a_prev) / (1 - a_t) * x_t
+    )
+
+    torch.manual_seed(0)
+    out = scheduler.step(eps, t, x_t).prev_sample
+    torch.manual_seed(0)
+    expected = expected_mean + scheduler.posterior_variance[
+        t
+    ].sqrt() * torch.randn_like(x_t)
+    assert torch.allclose(out, expected, atol=1e-5)
+
+
+def test_ddpm_subsampled_marginals():
+    # With an oracle noise prediction (x0 = 0), each reverse step must land on the
+    # forward-process marginal of the *next scheduled* timestep: std = sqrt(1 - a_t').
+    torch.manual_seed(0)
+    scheduler = DDPMScheduler(num_train_timesteps=100)
+    scheduler.set_timesteps(10)
+    ts = scheduler.timesteps
+    x = torch.randn(20000, 1, 1) * (1 - scheduler.alphas_cumprod[ts[0]]).sqrt()
+    for i, t in enumerate(ts[:-1]):
+        eps = x / (1 - scheduler.alphas_cumprod[t]).sqrt()
+        x = scheduler.step(eps, t, x).prev_sample
+        expected_std = (1 - scheduler.alphas_cumprod[ts[i + 1]]).sqrt().item()
+        assert abs(x.std().item() - expected_std) < 0.02 * max(expected_std, 0.1), (
+            f"step {i}: std {x.std().item():.4f} != {expected_std:.4f}"
+        )

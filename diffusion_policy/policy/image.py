@@ -11,7 +11,7 @@ Inference (DDIM reverse process by default):
   2. Start from pure noise x_T ~ N(0,I)
   3. Run DDIM reverse: 16 deterministic steps → normalized action sequence
      (DDPMScheduler also works; DDIM is ~6× faster with same quality)
-  4. Unnormalize → extract action[To : To+n_action_steps] as the executed chunk
+  4. Unnormalize → extract action[To-1 : To-1+n_action_steps] as the executed chunk
 
 Scheduler choice is made at load time (inference.py / eval.py), not here.
 This class accepts any scheduler implementing set_timesteps() / step().

@@ -25,12 +25,15 @@ def run_episode(env, policy, shape_meta, n_obs_steps, n_action_steps, max_steps=
     step = 0
 
     policy.eval()
+    device = next(policy.parameters()).device
     while not done and step < max_steps:
         # Build obs_dict matching policy's expected keys and shapes
         obs_dict = {}
-        for key in obs.keys():
+        for key in obs:
             stack = np.stack([o[key] for o in obs_deque])  # (T, ...)
-            obs_dict[key] = torch.tensor(stack, dtype=torch.float32).unsqueeze(0)
+            obs_dict[key] = torch.tensor(
+                stack, dtype=torch.float32, device=device
+            ).unsqueeze(0)
 
         with torch.no_grad():
             action_seq = policy.predict_action(obs_dict)

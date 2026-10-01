@@ -17,7 +17,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
 def plot_action_distributions(actions: torch.Tensor, output_dir: str):
@@ -34,7 +34,13 @@ def plot_action_distributions(actions: torch.Tensor, output_dir: str):
         axes[i].set_title(f"action dim {i}")
         axes[i].set_xlabel("value")
         axes[i].set_ylabel("count")
-        axes[i].axvline(actions_np[:, i].mean(), color="red", linestyle="--", linewidth=1, label="mean")
+        axes[i].axvline(
+            actions_np[:, i].mean(),
+            color="red",
+            linestyle="--",
+            linewidth=1,
+            label="mean",
+        )
         axes[i].legend(fontsize=8)
 
     for i in range(n_dims, len(axes)):
@@ -48,16 +54,21 @@ def plot_action_distributions(actions: torch.Tensor, output_dir: str):
     print(f"  saved {path}")
 
 
+def episode_bounds(ds: LeRobotDataset):
+    """[(from, to), ...] frame index range of each episode (LeRobot v3 metadata)."""
+    eps = ds.meta.episodes
+    return list(zip(eps["dataset_from_index"], eps["dataset_to_index"]))
+
+
 def plot_episode_lengths(ds: LeRobotDataset, output_dir: str):
-    lengths = [
-        ds.episode_data_index["to"][i].item() - ds.episode_data_index["from"][i].item()
-        for i in range(ds.num_episodes)
-    ]
+    lengths = [to - frm for frm, to in episode_bounds(ds)]
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.hist(lengths, bins=30, color="darkorange", alpha=0.8)
     ax.set_xlabel("Episode length (frames)")
     ax.set_ylabel("Count")
-    ax.set_title(f"Episode length distribution  (n={ds.num_episodes}, mean={np.mean(lengths):.0f})")
+    ax.set_title(
+        f"Episode length distribution  (n={len(lengths)}, mean={np.mean(lengths):.0f})"
+    )
     ax.axvline(np.mean(lengths), color="red", linestyle="--", linewidth=1, label="mean")
     ax.legend()
     fig.tight_layout()
@@ -67,11 +78,9 @@ def plot_episode_lengths(ds: LeRobotDataset, output_dir: str):
     print(f"  saved {path}")
 
 
-def plot_sample_trajectory(ds: LeRobotDataset, action_key: str, output_dir: str):
-    ep_start = ds.episode_data_index["from"][0].item()
-    ep_end = ds.episode_data_index["to"][0].item()
-    actions = torch.stack([ds.hf_dataset[i][action_key] for i in range(ep_start, ep_end)])
-    actions_np = actions.numpy()
+def plot_sample_trajectory(ds: LeRobotDataset, actions: torch.Tensor, output_dir: str):
+    ep_start, ep_end = episode_bounds(ds)[0]
+    actions_np = actions[ep_start:ep_end].numpy()
     n_dims = actions_np.shape[1]
     T = actions_np.shape[0]
 
@@ -103,13 +112,16 @@ def main():
     ds = LeRobotDataset(args.repo_id, root=args.root)
     print(f"  episodes: {ds.num_episodes}  frames: {len(ds)}")
 
-    actions = torch.tensor(ds.hf_dataset[args.action_key])
-    print(f"  action shape: {actions.shape}  min: {actions.min():.3f}  max: {actions.max():.3f}")
+    # Column access is much faster than row-by-row iteration
+    actions = torch.from_numpy(np.array(ds.hf_dataset[args.action_key]))
+    print(
+        f"  action shape: {actions.shape}  min: {actions.min():.3f}  max: {actions.max():.3f}"
+    )
 
     print("Generating plots ...")
     plot_action_distributions(actions, args.output_dir)
     plot_episode_lengths(ds, args.output_dir)
-    plot_sample_trajectory(ds, args.action_key, args.output_dir)
+    plot_sample_trajectory(ds, actions, args.output_dir)
     print("Done.")
 
 
